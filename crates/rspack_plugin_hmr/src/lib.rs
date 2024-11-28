@@ -1,19 +1,29 @@
+#![feature(let_chains)]
+
 mod hot_module_replacement;
 
 use async_trait::async_trait;
 use hot_module_replacement::HotModuleReplacementRuntimeModule;
-use rspack_collections::{IdentifierSet, UkeyMap};
+use rspack_collections::{DatabaseItem, IdentifierSet, UkeyMap};
 use rspack_core::{
   collect_changed_modules,
   rspack_sources::{RawSource, SourceExt},
   ApplyContext, AssetInfo, Chunk, ChunkKind, ChunkUkey, Compilation,
   CompilationAdditionalTreeRuntimeRequirements, CompilationAsset, CompilationParams,
   CompilationProcessAssets, CompilationRecords, CompilerCompilation, CompilerOptions,
-  DependencyType, LoaderContext, NormalModuleLoader, PathData, Plugin, PluginContext,
-  RunnerContext, RuntimeGlobals, RuntimeModuleExt, RuntimeSpec,
+  DependencyType, LoaderContext, ModuleType, NormalModuleFactoryParser, NormalModuleLoader,
+  ParserAndGenerator, ParserOptions, PathData, Plugin, PluginContext, RunnerContext,
+  RuntimeGlobals, RuntimeModuleExt, RuntimeSpec,
 };
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
+use rspack_plugin_css::parser_and_generator::CssParserAndGenerator;
+use rspack_plugin_javascript::{
+  hot_module_replacement_plugin::{
+    ImportMetaHotReplacementParserPlugin, ModuleHotReplacementParserPlugin,
+  },
+  parser_and_generator::JavaScriptParserAndGenerator,
+};
 use rspack_util::infallible::ResultInfallibleExt as _;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -133,14 +143,14 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       .iter()
       .find(|(_, chunk)| chunk.expect_id().eq(&chunk_id))
       .map(|(_, chunk)| chunk);
-    let current_chunk_ukey = current_chunk.map(|c| c.ukey);
+    let current_chunk_ukey = current_chunk.map(|c| c.ukey());
 
     if let Some(current_chunk) = current_chunk {
       chunk_id = current_chunk.expect_id().to_string();
       new_runtime = Default::default();
       // intersectRuntime
       for old_runtime in all_old_runtime.iter() {
-        if current_chunk.runtime.contains(old_runtime) {
+        if current_chunk.runtime().contains(old_runtime) {
           new_runtime.insert(old_runtime.clone());
         }
       }
@@ -151,15 +161,14 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
 
       new_modules = compilation
         .chunk_graph
-        .get_chunk_graph_chunk(&current_chunk.ukey)
-        .modules
+        .get_chunk_modules_identifier(&current_chunk.ukey())
         .iter()
         .filter_map(|module| updated_modules.contains(module).then_some(*module))
         .collect::<Vec<_>>();
 
       new_runtime_modules = compilation
         .chunk_graph
-        .get_chunk_runtime_modules_in_order(&current_chunk.ukey, compilation)
+        .get_chunk_runtime_modules_in_order(&current_chunk.ukey(), compilation)
         .filter(|(module, _)| updated_runtime_modules.contains(module))
         .map(|(&module, _)| module)
         .collect::<Vec<_>>();
@@ -181,13 +190,17 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
 
     if !new_modules.is_empty() || !new_runtime_modules.is_empty() {
       let mut hot_update_chunk = Chunk::new(None, ChunkKind::HotUpdate);
-      hot_update_chunk.id = Some(chunk_id.to_string());
-      hot_update_chunk.runtime = new_runtime.clone();
-      let ukey = hot_update_chunk.ukey;
+      hot_update_chunk.set_id(Some(chunk_id.to_string()));
+      hot_update_chunk.set_runtime(if let Some(current_chunk) = current_chunk {
+        current_chunk.runtime().clone()
+      } else {
+        new_runtime.clone()
+      });
+      let ukey = hot_update_chunk.ukey();
 
       if let Some(current_chunk) = current_chunk {
         current_chunk
-          .groups
+          .groups()
           .iter()
           .for_each(|group| hot_update_chunk.add_group(*group))
       }
@@ -245,17 +258,20 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       compilation.extend_diagnostics(diagnostics);
 
       for entry in manifest {
-        let filename = if entry.has_filename() {
-          entry.filename().to_string()
+        let filename = if entry.has_filename {
+          entry.filename.to_string()
         } else {
           compilation
             .get_path(
               &compilation.options.output.hot_update_chunk_filename,
-              PathData::default().chunk(&hot_update_chunk).hash_optional(
-                old_hash
-                  .as_ref()
-                  .map(|hash| hash.rendered(compilation.options.output.hash_digest_length)),
-              ),
+              PathData::default()
+                .chunk_id_optional(hot_update_chunk.id())
+                .chunk_name_optional(hot_update_chunk.name_for_filename_template())
+                .hash_optional(
+                  old_hash
+                    .as_ref()
+                    .map(|hash| hash.rendered(compilation.options.output.hash_digest_length)),
+                ),
             )
             .always_ok()
         };
@@ -286,11 +302,10 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
 
   // update chunk files
   for (chunk_ukey, files) in updated_chunks {
-    compilation
-      .chunk_by_ukey
-      .expect_get_mut(&chunk_ukey)
-      .files
-      .extend(files);
+    let chunk = compilation.chunk_by_ukey.expect_get_mut(&chunk_ukey);
+    for file in files {
+      chunk.add_file(file);
+    }
   }
 
   let completely_removed_modules_array: Vec<String> =
@@ -306,11 +321,13 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
     let filename = compilation
       .get_path(
         &compilation.options.output.hot_update_main_filename,
-        PathData::default().runtime(&content.runtime).hash_optional(
-          old_hash
-            .as_ref()
-            .map(|hash| hash.rendered(compilation.options.output.hash_digest_length)),
-        ),
+        PathData::default()
+          .runtime(content.runtime.as_str())
+          .hash_optional(
+            old_hash
+              .as_ref()
+              .map(|hash| hash.rendered(compilation.options.output.hash_digest_length)),
+          ),
       )
       .always_ok();
     compilation.emit_asset(
@@ -341,6 +358,33 @@ fn normal_module_loader(&self, context: &mut LoaderContext<RunnerContext>) -> Re
   Ok(())
 }
 
+#[plugin_hook(NormalModuleFactoryParser for HotModuleReplacementPlugin)]
+fn normal_module_factory_parser(
+  &self,
+  module_type: &ModuleType,
+  parser: &mut dyn ParserAndGenerator,
+  _parser_options: Option<&ParserOptions>,
+) -> Result<()> {
+  if let Some(parser) = parser.downcast_mut::<JavaScriptParserAndGenerator>() {
+    if module_type.is_js_auto() {
+      parser.add_parser_plugin(Box::new(ModuleHotReplacementParserPlugin::new()));
+      parser.add_parser_plugin(Box::new(ImportMetaHotReplacementParserPlugin::new()));
+    } else if module_type.is_js_dynamic() {
+      parser.add_parser_plugin(Box::new(ModuleHotReplacementParserPlugin::new()));
+    } else if module_type.is_js_esm() {
+      parser.add_parser_plugin(Box::new(ImportMetaHotReplacementParserPlugin::new()));
+    }
+  } else if matches!(
+    module_type,
+    ModuleType::Css | ModuleType::CssAuto | ModuleType::CssModule
+  ) && let Some(parser) = parser.downcast_mut::<CssParserAndGenerator>()
+  {
+    parser.hot = true;
+  }
+
+  Ok(())
+}
+
 #[plugin_hook(CompilationAdditionalTreeRuntimeRequirements for HotModuleReplacementPlugin)]
 async fn additional_tree_runtime_requirements(
   &self,
@@ -368,12 +412,7 @@ impl Plugin for HotModuleReplacementPlugin {
     "rspack.HotModuleReplacementPlugin"
   }
 
-  fn apply(
-    &self,
-    ctx: PluginContext<&mut ApplyContext>,
-    options: &mut CompilerOptions,
-  ) -> Result<()> {
-    options.dev_server.hot = true;
+  fn apply(&self, ctx: PluginContext<&mut ApplyContext>, _options: &CompilerOptions) -> Result<()> {
     ctx
       .context
       .compiler_hooks
@@ -389,6 +428,11 @@ impl Plugin for HotModuleReplacementPlugin {
       .normal_module_hooks
       .loader
       .tap(normal_module_loader::new(self));
+    ctx
+      .context
+      .normal_module_factory_hooks
+      .parser
+      .tap(normal_module_factory_parser::new(self));
     ctx
       .context
       .compilation_hooks

@@ -9,10 +9,7 @@ use rspack_macros::MergeFrom;
 use rspack_paths::{AssertUtf8, Utf8Path, Utf8PathBuf};
 use sugar_path::SugarPath;
 
-use crate::{
-  Chunk, ChunkGraph, ChunkGroupByUkey, ChunkKind, Compilation, Filename, FilenameTemplate, Module,
-  RuntimeSpec,
-};
+use crate::{Chunk, ChunkGroupByUkey, ChunkKind, Compilation, Filename, FilenameTemplate};
 
 #[derive(Debug)]
 pub enum PathInfo {
@@ -63,6 +60,7 @@ pub struct OutputOptions {
   pub worker_public_path: String,
   pub script_type: String,
   pub environment: Environment,
+  pub compare_before_emit: bool,
 }
 
 impl From<&OutputOptions> for RspackHash {
@@ -202,14 +200,12 @@ impl std::fmt::Display for CrossOriginLoading {
 #[derivative(Debug)]
 pub struct PathData<'a> {
   pub filename: Option<&'a str>,
-  #[derivative(Debug = "ignore")]
-  pub chunk: Option<&'a Chunk>,
-  #[derivative(Debug = "ignore")]
-  pub module: Option<&'a dyn Module>,
+  pub chunk_name: Option<&'a str>,
+  pub chunk_hash: Option<&'a str>,
+  pub chunk_id: Option<&'a str>,
+  pub module_id: Option<&'a str>,
   pub hash: Option<&'a str>,
   pub content_hash: Option<&'a str>,
-  #[derivative(Debug = "ignore")]
-  pub chunk_graph: Option<&'a ChunkGraph>,
   pub runtime: Option<&'a str>,
   pub url: Option<&'a str>,
   pub id: Option<&'a str>,
@@ -228,13 +224,38 @@ impl<'a> PathData<'a> {
     self
   }
 
-  pub fn chunk(mut self, v: &'a Chunk) -> Self {
-    self.chunk = Some(v);
+  pub fn chunk_hash(mut self, v: &'a str) -> Self {
+    self.chunk_hash = Some(v);
     self
   }
 
-  pub fn module(mut self, v: &'a dyn Module) -> Self {
-    self.module = Some(v);
+  pub fn chunk_hash_optional(mut self, v: Option<&'a str>) -> Self {
+    self.chunk_hash = v;
+    self
+  }
+
+  pub fn chunk_name(mut self, v: &'a str) -> Self {
+    self.chunk_name = Some(v);
+    self
+  }
+
+  pub fn chunk_name_optional(mut self, v: Option<&'a str>) -> Self {
+    self.chunk_name = v;
+    self
+  }
+
+  pub fn chunk_id(mut self, v: &'a str) -> Self {
+    self.chunk_id = Some(v);
+    self
+  }
+
+  pub fn chunk_id_optional(mut self, v: Option<&'a str>) -> Self {
+    self.chunk_id = v;
+    self
+  }
+
+  pub fn module_id_optional(mut self, v: Option<&'a str>) -> Self {
+    self.module_id = v;
     self
   }
 
@@ -258,17 +279,8 @@ impl<'a> PathData<'a> {
     self
   }
 
-  pub fn chunk_graph(mut self, v: &'a ChunkGraph) -> Self {
-    self.chunk_graph = Some(v);
-    self
-  }
-
-  pub fn runtime(mut self, v: &'a RuntimeSpec) -> Self {
-    self.runtime = if v.len() == 1 {
-      v.iter().next().map(|v| v.as_ref())
-    } else {
-      None
-    };
+  pub fn runtime(mut self, v: &'a str) -> Self {
+    self.runtime = Some(v);
     self
   }
 
@@ -367,14 +379,13 @@ impl From<String> for PublicPath {
   }
 }
 
-#[allow(clippy::if_same_then_else)]
 pub fn get_css_chunk_filename_template<'filename>(
   chunk: &'filename Chunk,
   output_options: &'filename OutputOptions,
   chunk_group_by_ukey: &ChunkGroupByUkey,
 ) -> &'filename Filename {
   // Align with https://github.com/webpack/webpack/blob/8241da7f1e75c5581ba535d127fa66aeb9eb2ac8/lib/css/CssModulesPlugin.js#L444
-  if let Some(css_filename_template) = &chunk.css_filename_template {
+  if let Some(css_filename_template) = chunk.css_filename_template() {
     css_filename_template
   } else if chunk.can_be_initial(chunk_group_by_ukey) {
     &output_options.css_filename
@@ -383,23 +394,20 @@ pub fn get_css_chunk_filename_template<'filename>(
   }
 }
 
-#[allow(clippy::if_same_then_else)]
-pub fn get_js_chunk_filename_template<'filename>(
-  chunk: &'filename Chunk,
-  output_options: &'filename OutputOptions,
+pub fn get_js_chunk_filename_template(
+  chunk: &Chunk,
+  output_options: &OutputOptions,
   chunk_group_by_ukey: &ChunkGroupByUkey,
-) -> &'filename Filename {
+) -> Filename {
   // Align with https://github.com/webpack/webpack/blob/8241da7f1e75c5581ba535d127fa66aeb9eb2ac8/lib/javascript/JavascriptModulesPlugin.js#L480
-  if let Some(filename_template) = &chunk.filename_template {
-    filename_template
+  if let Some(filename_template) = chunk.filename_template() {
+    filename_template.clone()
+  } else if matches!(chunk.kind(), ChunkKind::HotUpdate) {
+    output_options.hot_update_chunk_filename.clone().into()
   } else if chunk.can_be_initial(chunk_group_by_ukey) {
-    &output_options.filename
-  } else if matches!(chunk.kind, ChunkKind::HotUpdate) {
-    // TODO: Should return output_options.hotUpdateChunkFilename
-    // See https://github.com/webpack/webpack/blob/8241da7f1e75c5581ba535d127fa66aeb9eb2ac8/lib/javascript/JavascriptModulesPlugin.js#L484
-    &output_options.chunk_filename
+    output_options.filename.clone()
   } else {
-    &output_options.chunk_filename
+    output_options.chunk_filename.clone()
   }
 }
 
@@ -449,6 +457,7 @@ pub struct LibraryCustomUmdObject {
 pub struct Environment {
   pub r#const: Option<bool>,
   pub arrow_function: Option<bool>,
+  pub node_prefix_for_core_modules: Option<bool>,
 }
 
 impl Environment {
@@ -458,5 +467,9 @@ impl Environment {
 
   pub fn supports_arrow_function(&self) -> bool {
     self.arrow_function.unwrap_or_default()
+  }
+
+  pub fn supports_node_prefix_for_core_modules(&self) -> bool {
+    self.node_prefix_for_core_modules.unwrap_or_default()
   }
 }

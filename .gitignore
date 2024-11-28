@@ -169,7 +169,7 @@ webpack-dist
 .pnpm-store/
 
 !packages/rspack-test-tools/tests/configCases/target
-packages/playground/temp
+tests/e2e/temp
 packages/*/tests/js
 
 
@@ -223,7 +223,7 @@ tests/plugin-test/css-extract/js
 
 tests/plugin-test/html-plugin/js
 
-!packages/rspack-dev-server/tests/fixtures/**/node_modules
+tests/plugin-test/copy-plugin/build
 
 /webpack-examples/**/dist
 
@@ -238,3 +238,6 @@ diff_output
 
 # rspress build output
 /website/doc_build
+
+# xcode trace
+*.trace

@@ -2,7 +2,9 @@ use napi_derive::napi;
 use rspack_core::{ChunkLoading, Compilation, EntryData, EntryOptions, EntryRuntime};
 use rspack_napi::napi::bindgen_prelude::*;
 
-use crate::{dependency::DependencyDTO, entry::JsEntryOptions, library::JsLibraryOptions};
+use crate::{
+  dependency::JsDependency, entry::JsEntryOptions, library::JsLibraryOptions, JsDependencyWrapper,
+};
 
 #[napi]
 pub struct EntryOptionsDTO(EntryOptions);
@@ -152,8 +154,8 @@ impl EntryOptionsDTO {
 
 #[napi(object, object_to_js = false)]
 pub struct JsEntryData {
-  pub dependencies: Vec<ClassInstance<DependencyDTO>>,
-  pub include_dependencies: Vec<ClassInstance<DependencyDTO>>,
+  pub dependencies: Vec<ClassInstance<'static, JsDependency>>,
+  pub include_dependencies: Vec<ClassInstance<'static, JsDependency>>,
   pub options: JsEntryOptions,
 }
 
@@ -183,41 +185,41 @@ pub struct EntryDataDTO {
 
 #[napi]
 impl EntryDataDTO {
-  #[napi(getter)]
-  pub fn dependencies(&'static self, env: Env) -> Result<Vec<ClassInstance<DependencyDTO>>> {
+  #[napi(getter, ts_return_type = "JsDependency[]")]
+  pub fn dependencies(&'static self) -> Vec<JsDependencyWrapper> {
+    let module_graph = self.compilation.get_module_graph();
     self
       .entry_data
       .dependencies
-      .clone()
-      .into_iter()
-      .map(|id| {
-        let js_dep = DependencyDTO::new(id, self.compilation);
-        let instance = js_dep.into_instance(env)?;
-        Ok(instance)
+      .iter()
+      .map(|dependency_id| {
+        #[allow(clippy::unwrap_used)]
+        let dep = module_graph.dependency_by_id(dependency_id).unwrap();
+        JsDependencyWrapper::new(dep.as_ref(), self.compilation.id(), Some(self.compilation))
       })
-      .collect::<Result<Vec<ClassInstance<DependencyDTO>>>>()
+      .collect::<Vec<_>>()
   }
 
-  #[napi(getter)]
-  pub fn include_dependencies(
-    &'static self,
-    env: Env,
-  ) -> Result<Vec<ClassInstance<DependencyDTO>>> {
+  #[napi(getter, ts_return_type = "JsDependency[]")]
+  pub fn include_dependencies(&'static self) -> Vec<JsDependencyWrapper> {
+    let module_graph = self.compilation.get_module_graph();
     self
       .entry_data
       .include_dependencies
-      .clone()
-      .into_iter()
-      .map(|id| {
-        let js_dep = DependencyDTO::new(id, self.compilation);
-        let instance = js_dep.into_instance(env)?;
-        Ok(instance)
+      .iter()
+      .map(|dependency_id| {
+        #[allow(clippy::unwrap_used)]
+        let dep = module_graph.dependency_by_id(dependency_id).unwrap();
+        JsDependencyWrapper::new(dep.as_ref(), self.compilation.id(), Some(self.compilation))
       })
-      .collect::<Result<Vec<ClassInstance<DependencyDTO>>>>()
+      .collect::<Vec<_>>()
   }
 
   #[napi(getter)]
-  pub fn options(&self, env: Env) -> Result<ClassInstance<EntryOptionsDTO>> {
+  pub fn options<'scope>(
+    &self,
+    env: &'scope Env,
+  ) -> Result<ClassInstance<'scope, EntryOptionsDTO>> {
     EntryOptionsDTO::new(self.entry_data.options.clone()).into_instance(env)
   }
 }

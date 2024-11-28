@@ -10,7 +10,7 @@ use rspack_core::{
 };
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
-use rspack_plugin_javascript::dependency::{HarmonyImportSideEffectDependency, ImportDependency};
+use rspack_plugin_javascript::dependency::{ESMImportSideEffectDependency, ImportDependency};
 
 static UNSPECIFIED_EXTERNAL_TYPE_REGEXP: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r"^[a-z0-9-]+ ").expect("Invalid regex"));
@@ -103,6 +103,7 @@ impl ExternalsPlugin {
     }
 
     let dependency_meta: DependencyMeta = DependencyMeta {
+      attributes: dependency.get_attributes().cloned(),
       external_type: {
         if dependency
           .as_any()
@@ -112,7 +113,7 @@ impl ExternalsPlugin {
           Some(ExternalTypeEnum::Import)
         } else if dependency
           .as_any()
-          .downcast_ref::<HarmonyImportSideEffectDependency>()
+          .downcast_ref::<ESMImportSideEffectDependency>()
           .is_some()
         {
           Some(ExternalTypeEnum::Module)
@@ -198,11 +199,7 @@ impl Plugin for ExternalsPlugin {
     "rspack.ExternalsPlugin"
   }
 
-  fn apply(
-    &self,
-    ctx: PluginContext<&mut ApplyContext>,
-    _options: &mut CompilerOptions,
-  ) -> Result<()> {
+  fn apply(&self, ctx: PluginContext<&mut ApplyContext>, _options: &CompilerOptions) -> Result<()> {
     ctx
       .context
       .normal_module_factory_hooks

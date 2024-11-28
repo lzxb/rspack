@@ -43,13 +43,19 @@ impl RuntimeModule for AutoPublicPathRuntimeModule {
       &compilation.chunk_group_by_ukey,
     );
     let filename = compilation.get_path(
-      filename,
-      PathData::default().chunk(chunk).content_hash_optional(
-        chunk
-          .content_hash
-          .get(&SourceType::JavaScript)
-          .map(|i| i.rendered(compilation.options.output.hash_digest_length)),
-      ),
+      &filename,
+      PathData::default()
+        .chunk_id_optional(chunk.id())
+        .chunk_hash_optional(chunk.rendered_hash(
+          &compilation.chunk_hashes_results,
+          compilation.options.output.hash_digest_length,
+        ))
+        .chunk_name_optional(chunk.name_for_filename_template())
+        .content_hash_optional(chunk.rendered_content_hash_by_source_type(
+          &compilation.chunk_hashes_results,
+          &SourceType::JavaScript,
+          compilation.options.output.hash_digest_length,
+        )),
     )?;
     Ok(
       RawSource::from(auto_public_path_template(

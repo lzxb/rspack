@@ -13,7 +13,10 @@ pub fn externals_dep_array(modules: &[&ExternalModule]) -> Result<String> {
         ExternalRequest::Map(map) => map.get("amd").map(|r| r.primary()),
       })
     })
-    .collect::<Result<Vec<_>>>()?;
+    .collect::<Result<Vec<_>>>()?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
   serde_json::to_string(&value).map_err(|e| error!(e.to_string()))
 }
 
@@ -48,7 +51,7 @@ pub fn external_module_names(
 
 pub fn get_options_for_chunk<'a>(
   compilation: &'a Compilation,
-  chunk_ukey: &'a ChunkUkey,
+  chunk_ukey: &ChunkUkey,
 ) -> Option<&'a LibraryOptions> {
   if compilation
     .chunk_graph

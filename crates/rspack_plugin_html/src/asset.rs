@@ -10,11 +10,10 @@ use anyhow::Context;
 use cow_utils::CowUtils;
 use itertools::Itertools;
 use rayon::prelude::*;
-use regex::Regex;
 use rspack_core::{
   parse_to_url,
   rspack_sources::{RawSource, SourceExt},
-  Compilation, CompilationAsset, Filename, NoFilenameFn, PathData,
+  AssetInfo, Compilation, CompilationAsset, Filename, NoFilenameFn, PathData,
 };
 use rspack_error::{miette, AnyhowError};
 use rspack_paths::Utf8PathBuf;
@@ -112,21 +111,17 @@ impl HtmlPluginAssets {
         favicon_relative_path.to_string_lossy().to_string().as_str(),
       ));
 
-      let fake_html_file_name = compilation
-        .get_path(
-          html_file_name,
-          PathData::default().filename(output_path.as_str()),
-        )
-        .always_ok();
-
       if favicon_path.to_str().unwrap_or_default().is_empty() {
-        favicon_path = compilation
-          .options
-          .output
-          .path
-          .as_std_path()
-          .join(favicon_relative_path)
-          .relative(PathBuf::from(fake_html_file_name).join(".."));
+        let fake_html_file_name = compilation
+          .get_path(
+            html_file_name,
+            PathData::default().filename(output_path.as_str()),
+          )
+          .always_ok();
+        let output_path = compilation.options.output.path.as_std_path();
+        favicon_path = output_path
+          .relative(output_path.join(fake_html_file_name).join(".."))
+          .join(favicon_relative_path);
       } else {
         favicon_path.push(favicon_relative_path);
       }
@@ -282,8 +277,7 @@ pub fn append_hash(url: &str, hash: &str) -> String {
 
 pub fn generate_posix_path(path: &str) -> Cow<'_, str> {
   if env::consts::OS == "windows" {
-    let reg = Regex::new(r"[/\\]").expect("Invalid RegExp");
-    reg.replace_all(path, "/")
+    path.cow_replace(&['/', '\\'] as &[char], "/")
   } else {
     path.into()
   }
@@ -349,12 +343,14 @@ pub fn create_html_asset(
 ) -> (String, CompilationAsset) {
   let hash = hash_for_source(html);
 
-  let (output_path, asset_info) = compilation
+  let mut asset_info = AssetInfo::default();
+  let output_path = compilation
     .get_path_with_info(
       output_file_name,
       PathData::default()
         .filename(template_file_name)
         .content_hash(&hash),
+      &mut asset_info,
     )
     .always_ok();
 

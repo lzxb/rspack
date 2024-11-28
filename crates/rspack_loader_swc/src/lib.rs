@@ -9,7 +9,7 @@ use std::default::Default;
 use compiler::{IntoJsAst, SwcCompiler};
 use options::SwcCompilerOptionsWithAdditional;
 pub use options::SwcLoaderJsOptions;
-use rspack_core::{rspack_sources::SourceMap, Mode, RunnerContext};
+use rspack_core::{Mode, RunnerContext};
 use rspack_error::{error, AnyhowError, Diagnostic, Result};
 use rspack_loader_runner::{Identifiable, Identifier, Loader, LoaderContext};
 use rspack_plugin_javascript::ast::{self, SourceMapConfig};
@@ -86,13 +86,9 @@ impl SwcLoader {
       _ => loader_context.context.module_source_map_kind,
     };
 
-    let source = content.try_into_string()?;
-    let c = SwcCompiler::new(
-      resource_path.into_std_path_buf(),
-      source.clone(),
-      swc_options,
-    )
-    .map_err(AnyhowError::from)?;
+    let source = content.into_string_lossy();
+    let c = SwcCompiler::new(resource_path.into_std_path_buf(), source, swc_options)
+      .map_err(AnyhowError::from)?;
 
     let built = c
       .parse(None, |_| {
@@ -122,7 +118,7 @@ impl SwcLoader {
       keep_comments: Some(true),
     };
 
-    let program = tokio::task::block_in_place(|| c.transform(built).map_err(AnyhowError::from))?;
+    let program = c.transform(built).map_err(AnyhowError::from)?;
     if source_map_kind.enabled() {
       let mut v = IdentCollector {
         names: Default::default(),
@@ -132,11 +128,6 @@ impl SwcLoader {
     }
     let ast = c.into_js_ast(program);
     let TransformOutput { code, map } = ast::stringify(&ast, codegen_options)?;
-
-    let map = map
-      .map(|m| SourceMap::from_json(&m))
-      .transpose()
-      .map_err(|e| error!(e.to_string()))?;
     loader_context.finish_with((code, map));
 
     Ok(())

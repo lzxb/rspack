@@ -40,6 +40,7 @@ pub struct JsCallback<Resolver: FnOnce(Env)> {
 }
 
 unsafe impl<Resolver: FnOnce(Env)> Send for JsCallback<Resolver> {}
+unsafe impl<Resolver: FnOnce(Env)> Sync for JsCallback<Resolver> {}
 
 impl<Resolver: FnOnce(Env)> JsCallback<Resolver> {
   /// # Safety
@@ -140,5 +141,5 @@ extern "C" fn napi_js_callback<Resolver: FnOnce(Env)>(
     return;
   }
   let deferred_data = unsafe { Box::<DeferredData<Resolver>>::from_raw(data.cast()) };
-  (deferred_data.resolver)(unsafe { Env::from_raw(env) });
+  (deferred_data.resolver)(Env::from_raw(env));
 }

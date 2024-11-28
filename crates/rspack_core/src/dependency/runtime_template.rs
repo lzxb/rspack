@@ -176,9 +176,9 @@ pub fn export_from_import(
       init_fragments.push(
         NormalInitFragment::new(
           name.clone(),
-          InitFragmentStage::StageHarmonyExports,
+          InitFragmentStage::StageESMExports,
           -1,
-          InitFragmentKey::HarmonyFakeNamespaceObjectFragment(name),
+          InitFragmentKey::ESMFakeNamespaceObjectFragment(name),
           None,
         )
         .boxed(),
@@ -258,7 +258,7 @@ pub fn get_exports_type(
   let strict = module_graph
     .module_by_identifier(parent_module)
     .expect("should have mgm")
-    .get_strict_harmony_module();
+    .get_strict_esm_module();
   get_exports_type_with_strict(module_graph, id, strict)
 }
 
@@ -385,7 +385,7 @@ pub fn import_statement(
   let opt_declaration = if update { "" } else { "var " };
 
   let import_content = format!(
-    "/* harmony import */{opt_declaration}{import_var} = {}({module_id_expr});\n",
+    "/* ESM import */{opt_declaration}{import_var} = {}({module_id_expr});\n",
     RuntimeGlobals::REQUIRE
   );
 
@@ -395,7 +395,7 @@ pub fn import_statement(
     return (
       import_content,
       format!(
-        "/* harmony import */{opt_declaration}{import_var}_default = /*#__PURE__*/{}({import_var});\n",
+        "/* ESM import */{opt_declaration}{import_var}_default = /*#__PURE__*/{}({import_var});\n",
         RuntimeGlobals::COMPAT_GET_DEFAULT_EXPORT,
       ),
     );
@@ -537,7 +537,7 @@ pub fn block_promise(
         message: Some(message),
       },
     );
-    return format!("Promise.resolve({comment})");
+    return format!("Promise.resolve({})", comment.trim());
   };
   let chunk_group = compilation
     .chunk_graph
@@ -551,7 +551,7 @@ pub fn block_promise(
         message: Some(message),
       },
     );
-    return format!("Promise.resolve({comment})");
+    return format!("Promise.resolve({})", comment.trim());
   };
   if chunk_group.chunks.is_empty() {
     let comment = comment(
@@ -562,7 +562,7 @@ pub fn block_promise(
         message: Some(message),
       },
     );
-    return format!("Promise.resolve({comment})");
+    return format!("Promise.resolve({})", comment.trim());
   }
   let mg = compilation.get_module_graph();
   let block = mg.block_by_id_expect(block);
@@ -578,11 +578,11 @@ pub fn block_promise(
     .chunks
     .iter()
     .map(|c| compilation.chunk_by_ukey.expect_get(c))
-    .filter(|c| !c.has_runtime(&compilation.chunk_group_by_ukey) && c.id.is_some())
+    .filter(|c| !c.has_runtime(&compilation.chunk_group_by_ukey) && c.id().is_some())
     .collect::<Vec<_>>();
 
   if chunks.len() == 1 {
-    let chunk_id = serde_json::to_string(chunks[0].id.as_ref().expect("should have chunk.id"))
+    let chunk_id = serde_json::to_string(chunks[0].id().expect("should have chunk.id"))
       .expect("should able to json stringify");
     runtime_requirements.insert(RuntimeGlobals::ENSURE_CHUNK);
 
@@ -621,7 +621,7 @@ pub fn block_promise(
         .map(|c| format!(
           "{}({}{})",
           RuntimeGlobals::ENSURE_CHUNK,
-          serde_json::to_string(c.id.as_ref().expect("should have chunk.id"))
+          serde_json::to_string(c.id().expect("should have chunk.id"))
             .expect("should able to json stringify"),
           fetch_priority
             .map(|x| format!(r#", "{x}""#))
@@ -631,7 +631,7 @@ pub fn block_promise(
         .join(", ")
     )
   } else {
-    format!("Promise.resolve({comment})")
+    format!("Promise.resolve({})", comment.trim())
   }
 }
 
@@ -771,6 +771,7 @@ pub fn define_es_module_flag_statement(
 #[allow(unused_imports)]
 mod test_items_to_regexp {
   use crate::items_to_regexp;
+
   #[test]
   fn basic() {
     assert_eq!(
@@ -811,6 +812,59 @@ mod test_items_to_regexp {
           .collect::<Vec<_>>(),
       ),
       "[1234a]".to_string()
+    );
+
+    assert_eq!(
+      items_to_regexp(
+        vec!["foo_js", "_js"]
+          .into_iter()
+          .map(String::from)
+          .collect::<Vec<_>>(),
+      ),
+      "(|foo)_js".to_string()
+    );
+  }
+
+  #[test]
+  fn multibyte() {
+    assert_eq!(
+      items_to_regexp(
+        vec!["🍉", "🍊", "🍓", "🍐", "🍍🫙"]
+          .into_iter()
+          .map(String::from)
+          .collect::<Vec<_>>(),
+      ),
+      "([🍉🍊🍐🍓]|🍍🫙)".to_string()
+    );
+
+    assert_eq!(
+      items_to_regexp(
+        vec!["🫙🍉", "🫙🍊", "🫙🍓", "🫙🍐", "🍽🍍"]
+          .into_iter()
+          .map(String::from)
+          .collect::<Vec<_>>(),
+      ),
+      "(🫙[🍉🍊🍐🍓]|🍽🍍)".to_string()
+    );
+
+    assert_eq!(
+      items_to_regexp(
+        vec!["🍉🍭", "🍊🍭", "🍓🍭", "🍐🍭", "🍍🫙"]
+          .into_iter()
+          .map(String::from)
+          .collect::<Vec<_>>(),
+      ),
+      "([🍉🍊🍐🍓]🍭|🍍🫙)".to_string()
+    );
+
+    assert_eq!(
+      items_to_regexp(
+        vec!["🍉", "🍊", "🍓", "🍐", "🫙"]
+          .into_iter()
+          .map(String::from)
+          .collect::<Vec<_>>(),
+      ),
+      "[🍉🍊🍐🍓🫙]".to_string()
     );
   }
 }

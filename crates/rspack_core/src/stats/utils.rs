@@ -7,16 +7,16 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{Stats, StatsChunkGroup, StatsErrorModuleTraceModule, StatsModule, StatsModuleTrace};
 use crate::{
-  get_chunk_from_ukey, get_chunk_group_from_ukey, BoxModule, Chunk, ChunkByUkey, ChunkGraph,
-  ChunkGroupByUkey, ChunkGroupOrderKey, ChunkGroupUkey, Compilation, CompilerOptions, ModuleGraph,
+  BoxModule, Chunk, ChunkByUkey, ChunkGraph, ChunkGroupByUkey, ChunkGroupOrderKey, ChunkGroupUkey,
+  Compilation, CompilerOptions, ModuleGraph,
 };
 
-pub fn get_asset_size(file: &str, compilation: &Compilation) -> f64 {
+pub fn get_asset_size(file: &str, compilation: &Compilation) -> usize {
   compilation
     .assets()
     .get(file)
-    .and_then(|asset| asset.get_source().map(|s| s.size() as f64))
-    .unwrap_or(-1f64)
+    .and_then(|asset| asset.get_source().map(|s| s.size()))
+    .unwrap_or(0)
 }
 
 pub fn sort_modules(modules: &mut [StatsModule]) {
@@ -85,7 +85,7 @@ pub fn get_chunk_group_oreded_child_assets(
         .expect_get(ukey)
         .chunks
         .iter()
-        .flat_map(|c| chunk_by_ukey.expect_get(c).files.clone())
+        .flat_map(|c| chunk_by_ukey.expect_get(c).files().clone())
         .collect::<Vec<_>>()
     })
     .unique()
@@ -101,13 +101,13 @@ pub fn get_chunk_relations(
   let mut children = HashSet::default();
   let mut siblings = HashSet::default();
 
-  for cg in &chunk.groups {
-    if let Some(cg) = get_chunk_group_from_ukey(cg, chunk_group_by_ukey) {
+  for cg in chunk.groups() {
+    if let Some(cg) = chunk_group_by_ukey.get(cg) {
       for p in &cg.parents {
-        if let Some(pg) = get_chunk_group_from_ukey(p, chunk_group_by_ukey) {
+        if let Some(pg) = chunk_group_by_ukey.get(p) {
           for c in &pg.chunks {
-            if let Some(c) = get_chunk_from_ukey(c, chunk_by_ukey)
-              && let Some(id) = &c.id
+            if let Some(c) = chunk_by_ukey.get(c)
+              && let Some(id) = c.id()
             {
               parents.insert(id.to_string());
             }
@@ -116,10 +116,10 @@ pub fn get_chunk_relations(
       }
 
       for p in &cg.children {
-        if let Some(pg) = get_chunk_group_from_ukey(p, chunk_group_by_ukey) {
+        if let Some(pg) = chunk_group_by_ukey.get(p) {
           for c in &pg.chunks {
-            if let Some(c) = get_chunk_from_ukey(c, chunk_by_ukey)
-              && let Some(id) = &c.id
+            if let Some(c) = chunk_by_ukey.get(c)
+              && let Some(id) = c.id()
             {
               children.insert(id.to_string());
             }
@@ -128,9 +128,9 @@ pub fn get_chunk_relations(
       }
 
       for c in &cg.chunks {
-        if let Some(c) = get_chunk_from_ukey(c, chunk_by_ukey)
-          && c.id != chunk.id
-          && let Some(id) = &c.id
+        if let Some(c) = chunk_by_ukey.get(c)
+          && c.id() != chunk.id()
+          && let Some(id) = c.id()
         {
           siblings.insert(id.to_string());
         }

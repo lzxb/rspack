@@ -84,7 +84,8 @@ impl ParserAndGenerator for JsonParserAndGenerator {
         ExceededDepthLimit | WrongType(_) | FailedUtf8Parsing => diagnostic!("{e}").boxed(),
         UnexpectedEndOfJson => {
           // End offset of json file
-          let offset = source.len() - 1;
+          let length = source.len();
+          let offset = if length > 0 { length - 1 } else { length };
           TraceableError::from_file(
             source.into_owned(),
             offset,
@@ -145,9 +146,6 @@ impl ParserAndGenerator for JsonParserAndGenerator {
     let module_graph = compilation.get_module_graph();
     match generate_context.requested_source_type {
       SourceType::JavaScript => {
-        generate_context
-          .runtime_requirements
-          .insert(RuntimeGlobals::MODULE);
         let module = module_graph
           .module_by_identifier(&module.identifier())
           .expect("should have module identifier");
@@ -184,6 +182,9 @@ impl ParserAndGenerator for JsonParserAndGenerator {
           scope.register_namespace_export(NAMESPACE_OBJECT_EXPORT);
           format!("var {NAMESPACE_OBJECT_EXPORT} = {json_expr}")
         } else {
+          generate_context
+            .runtime_requirements
+            .insert(RuntimeGlobals::MODULE);
           format!(r#"module.exports = {}"#, json_expr)
         };
         Ok(RawSource::from(content).boxed())
@@ -216,7 +217,7 @@ impl Plugin for JsonPlugin {
   fn apply(
     &self,
     ctx: rspack_core::PluginContext<&mut rspack_core::ApplyContext>,
-    _options: &mut CompilerOptions,
+    _options: &CompilerOptions,
   ) -> Result<()> {
     ctx.context.register_parser_and_generator_builder(
       rspack_core::ModuleType::Json,

@@ -8,6 +8,25 @@ module.exports = {
 		+ Received
 
 		@@ ... @@
+		-     "cache": true,
+		+     "cache": false,
+		@@ ... @@
+		-     "incremental": Object {
+		-       "buildChunkGraph": false,
+		-       "chunksHashes": false,
+		-       "chunksRender": false,
+		-       "chunksRuntimeRequirements": false,
+		-       "dependenciesDiagnostics": false,
+		-       "emitAssets": true,
+		-       "inferAsyncModules": false,
+		-       "make": true,
+		-       "modulesCodegen": false,
+		-       "modulesHashes": false,
+		-       "modulesRuntimeRequirements": false,
+		-       "providedExports": false,
+		-     },
+		+     "incremental": false,
+		@@ ... @@
 		-   "mode": "none",
 		+   "mode": undefined,
 		@@ ... @@

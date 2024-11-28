@@ -1,4 +1,4 @@
-use rspack_core::{module_id, Compilation, RealDependencyLocation, RuntimeSpec};
+use rspack_core::{module_id, Compilation, DependencyRange, RuntimeSpec};
 use rspack_core::{AsContextDependency, Dependency, DependencyCategory};
 use rspack_core::{DependencyId, DependencyTemplate};
 use rspack_core::{DependencyType, ModuleDependency};
@@ -9,15 +9,15 @@ pub struct CommonJsRequireDependency {
   id: DependencyId,
   request: String,
   optional: bool,
-  range: Option<RealDependencyLocation>,
-  range_expr: RealDependencyLocation,
+  range: DependencyRange,
+  range_expr: Option<DependencyRange>,
 }
 
 impl CommonJsRequireDependency {
   pub fn new(
     request: String,
-    range: Option<RealDependencyLocation>,
-    range_expr: RealDependencyLocation,
+    range: DependencyRange,
+    range_expr: Option<DependencyRange>,
     optional: bool,
   ) -> Self {
     Self {
@@ -36,7 +36,7 @@ impl Dependency for CommonJsRequireDependency {
   }
 
   fn loc(&self) -> Option<String> {
-    self.range.clone().map(|range| range.to_string())
+    Some(self.range.to_string())
   }
 
   fn category(&self) -> &DependencyCategory {
@@ -47,8 +47,8 @@ impl Dependency for CommonJsRequireDependency {
     &DependencyType::CjsRequire
   }
 
-  fn range(&self) -> Option<&RealDependencyLocation> {
-    self.range.as_ref()
+  fn range(&self) -> Option<&DependencyRange> {
+    self.range_expr.as_ref()
   }
 
   fn could_affect_referencing_module(&self) -> rspack_core::AffectType {
@@ -81,8 +81,8 @@ impl DependencyTemplate for CommonJsRequireDependency {
     code_generatable_context: &mut TemplateContext,
   ) {
     source.replace(
-      self.range_expr.start,
-      self.range_expr.end - 1,
+      self.range.start,
+      self.range.end - 1,
       module_id(
         code_generatable_context.compilation,
         &self.id,

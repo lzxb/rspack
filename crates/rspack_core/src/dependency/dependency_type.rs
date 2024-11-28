@@ -10,10 +10,10 @@ pub enum DependencyType {
   Unknown,
   ExportInfoApi,
   Entry,
-  // Harmony import
+  // ESM import
   EsmImport,
   EsmImportSpecifier,
-  // Harmony export
+  // ESM export
   EsmExport,
   EsmExportImportedSpecifier,
   EsmExportSpecifier,
@@ -33,6 +33,12 @@ pub enum DependencyType {
   CjsExportRequire,
   // cjs self reference
   CjsSelfReference,
+  // AMD
+  AmdDefine,
+  AmdRequireArray,
+  AmdRequireContext,
+  AmdRequire,
+  AmdRequireItem,
   // new URL("./foo", import.meta.url)
   NewUrl,
   // new Worker()
@@ -57,6 +63,8 @@ pub enum DependencyType {
   CssExport,
   // css modules local ident
   CssLocalIdent,
+  // css modules self reference
+  CssSelfReferenceLocalIdent,
   // context element
   ContextElement(ContextTypePrefix),
   // import context
@@ -69,6 +77,10 @@ pub enum DependencyType {
   RequireContext,
   // require.resolve
   RequireResolve,
+  // require.ensure
+  RequireEnsure,
+  // require.ensure item
+  RequireEnsureItem,
   /// wasm import
   WasmImport,
   /// wasm export import
@@ -97,6 +109,8 @@ pub enum DependencyType {
   LoaderImport,
   LazyImport,
   ModuleDecorator,
+  DllEntry,
+  DelegatedSource,
   Custom(&'static str),
 }
 
@@ -118,6 +132,11 @@ impl DependencyType {
       DependencyType::CjsExports => "cjs exports",
       DependencyType::CjsExportRequire => "cjs export require",
       DependencyType::CjsSelfReference => "cjs self exports reference",
+      DependencyType::AmdDefine => "amd define",
+      DependencyType::AmdRequireArray => "amd require array",
+      DependencyType::AmdRequireContext => "amd require context",
+      DependencyType::AmdRequire => "amd",
+      DependencyType::AmdRequireItem => "amd require",
       DependencyType::NewUrl => "new URL()",
       DependencyType::NewWorker => "new Worker()",
       DependencyType::CreateScriptUrl => "create script url",
@@ -130,6 +149,7 @@ impl DependencyType {
       DependencyType::CssCompose => "css compose",
       DependencyType::CssExport => "css export",
       DependencyType::CssLocalIdent => "css local ident",
+      DependencyType::CssSelfReferenceLocalIdent => "css self reference local ident",
       DependencyType::ContextElement(type_prefix) => match type_prefix {
         ContextTypePrefix::Import => "import() context element",
         ContextTypePrefix::Normal => "context element",
@@ -140,6 +160,8 @@ impl DependencyType {
       DependencyType::CommonJSRequireContext => "commonjs require context",
       DependencyType::RequireContext => "require.context",
       DependencyType::RequireResolve => "require.resolve",
+      DependencyType::RequireEnsure => "require.ensure",
+      DependencyType::RequireEnsureItem => "require.ensure item",
       DependencyType::WasmImport => "wasm import",
       DependencyType::WasmExportImported => "wasm export imported",
       DependencyType::StaticExports => "static exports",
@@ -150,6 +172,7 @@ impl DependencyType {
       DependencyType::ImportMetaContext => "import.meta context",
       DependencyType::ContainerExposed => "container exposed",
       DependencyType::ContainerEntry => "container entry",
+      DependencyType::DllEntry => "dll entry",
       DependencyType::RemoteToExternal => "remote to external",
       DependencyType::RemoteToFallback => "fallback",
       DependencyType::RemoteToFallbackItem => "fallback item",
@@ -160,6 +183,7 @@ impl DependencyType {
       DependencyType::WebpackIsIncluded => "__webpack_is_included__",
       DependencyType::LazyImport => "lazy import()",
       DependencyType::ModuleDecorator => "module decorator",
+      DependencyType::DelegatedSource => "delegated source",
     }
   }
 }

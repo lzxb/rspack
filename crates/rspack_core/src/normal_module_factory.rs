@@ -13,7 +13,7 @@ use swc_core::common::Span;
 use crate::{
   diagnostics::EmptyDependency, module_rules_matcher, parse_resource, resolve,
   stringify_loaders_and_resource, BoxLoader, BoxModule, CompilerOptions, Context, Dependency,
-  DependencyCategory, FuncUseCtx, GeneratorOptions, ModuleExt, ModuleFactory,
+  DependencyCategory, DependencyRange, FuncUseCtx, GeneratorOptions, ModuleExt, ModuleFactory,
   ModuleFactoryCreateData, ModuleFactoryResult, ModuleIdentifier, ModuleLayer, ModuleRuleEffect,
   ModuleRuleEnforce, ModuleRuleUse, ModuleRuleUseLoader, ModuleType, NormalModule,
   ParserAndGenerator, ParserOptions, RawModule, Resolve, ResolveArgs,
@@ -231,7 +231,7 @@ impl NormalModuleFactory {
 
         if first_char.is_none() {
           let span = dependency.source_span().unwrap_or_default();
-          return Err(EmptyDependency::new(span).into());
+          return Err(EmptyDependency::new(DependencyRange::new(span.start, span.end)).into());
         }
 
         // See: https://webpack.js.org/concepts/loaders/#inline

@@ -102,6 +102,20 @@ impl AssetParserAndGenerator {
     }
   }
 
+  fn decode_data_uri_content(encoding: &str, content: &str, source: &BoxSource) -> Vec<u8> {
+    if encoding == "base64"
+      && let Some(cleaned) = rspack_base64::clean_base64(content)
+    {
+      return rspack_base64::decode_to_vec(cleaned.as_bytes())
+        .unwrap_or_else(|_| source.buffer().to_vec());
+    }
+
+    match urlencoding::decode(content) {
+      Ok(decoded_content) => decoded_content.as_bytes().to_vec(),
+      Err(_) => content.as_bytes().to_vec(),
+    }
+  }
+
   fn hash_for_source(
     &self,
     source: &BoxSource,
@@ -184,7 +198,12 @@ impl AssetParserAndGenerator {
     encoding: &str,
     source: &BoxSource,
   ) -> Result<String> {
-    if let Some(encoded_content) = &resource_data.encoded_content {
+    if let Some(encoded_content) = &resource_data.encoded_content
+      && let Some(resource_encoding) = &resource_data.encoding
+      && resource_encoding == encoding
+      && AssetParserAndGenerator::decode_data_uri_content(encoding, encoded_content, source)
+        .eq(&source.buffer().to_vec())
+    {
       return Ok(encoded_content.to_owned());
     }
     if encoding.is_empty() {
@@ -227,8 +246,7 @@ impl AssetParserAndGenerator {
     compilation.get_asset_path_with_info(
       asset_filename_template,
       PathData::default()
-        .module(module)
-        .chunk_graph(&compilation.chunk_graph)
+        .module_id_optional(compilation.chunk_graph.get_module_id(module.id()))
         .content_hash_optional(contenthash)
         .hash_optional(contenthash)
         .filename(source_file_name),
@@ -246,8 +264,7 @@ impl AssetParserAndGenerator {
     let (public_path, info) = compilation.get_asset_path_with_info(
       template,
       PathData::default()
-        .module(module)
-        .chunk_graph(&compilation.chunk_graph)
+        .module_id_optional(compilation.chunk_graph.get_module_id(module.id()))
         .content_hash_optional(contenthash)
         .hash_optional(contenthash)
         .filename(source_file_name),
@@ -258,7 +275,7 @@ impl AssetParserAndGenerator {
 }
 
 // Webpack's default parser.dataUrlCondition.maxSize
-const DEFAULT_MAX_SIZE: u32 = 8096;
+const DEFAULT_MAX_SIZE: f64 = 8096.0;
 
 impl ParserAndGenerator for AssetParserAndGenerator {
   fn source_types(&self) -> &[SourceType] {
@@ -582,7 +599,7 @@ async fn render_manifest(
     .map(|m| {
       let code_gen_result = compilation
         .code_generation_results
-        .get(&m.identifier(), Some(&chunk.runtime));
+        .get(&m.identifier(), Some(chunk.runtime()));
 
       let result = code_gen_result.get(&SourceType::Asset).map(|source| {
         let asset_filename = code_gen_result
@@ -595,13 +612,13 @@ async fn render_manifest(
           .get::<CodeGenerationDataAssetInfo>()
           .expect("should have asset_info")
           .inner();
-        RenderManifestEntry::new(
-          source.clone(),
-          asset_filename.to_owned(),
-          asset_info.to_owned(),
-          true,
-          true,
-        )
+        RenderManifestEntry {
+          source: source.clone(),
+          filename: asset_filename.to_owned(),
+          has_filename: true,
+          info: asset_info.to_owned(),
+          auxiliary: true,
+        }
       });
 
       Ok(result)
@@ -624,7 +641,7 @@ impl Plugin for AssetPlugin {
   fn apply(
     &self,
     ctx: rspack_core::PluginContext<&mut rspack_core::ApplyContext>,
-    _options: &mut CompilerOptions,
+    _options: &CompilerOptions,
   ) -> Result<()> {
     ctx
       .context

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use derivative::Derivative;
 use rspack_core::{
   AfterResolveResult, ApplyContext, BeforeResolveResult, CompilerOptions, ContextElementDependency,
   ContextModuleFactoryAfterResolve, ContextModuleFactoryBeforeResolve, DependencyId,
@@ -21,8 +20,7 @@ pub struct ContextReplacementPluginOptions {
 }
 
 #[plugin]
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct ContextReplacementPlugin {
   resource_reg_exp: RspackRegex,
   new_content_resource: Option<String>,
@@ -142,11 +140,7 @@ impl Plugin for ContextReplacementPlugin {
     "rspack.ContextReplacementPlugin"
   }
 
-  fn apply(
-    &self,
-    ctx: PluginContext<&mut ApplyContext>,
-    _options: &mut CompilerOptions,
-  ) -> Result<()> {
+  fn apply(&self, ctx: PluginContext<&mut ApplyContext>, _options: &CompilerOptions) -> Result<()> {
     ctx
       .context
       .context_module_factory_hooks

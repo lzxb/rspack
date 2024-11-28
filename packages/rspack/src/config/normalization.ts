@@ -11,9 +11,7 @@
 import type { Compilation } from "../Compilation";
 import type {
 	AssetModuleFilename,
-	AsyncChunks,
 	Bail,
-	BaseUri,
 	CacheOptions,
 	ChunkFilename,
 	ChunkLoading,
@@ -31,10 +29,10 @@ import type {
 	DevtoolNamespace,
 	EnabledLibraryTypes,
 	EnabledWasmLoadingTypes,
-	EntryFilename,
-	EntryRuntime,
+	EntryDescription,
 	EntryStatic,
 	Environment,
+	ExperimentCacheOptions,
 	Externals,
 	ExternalsPresets,
 	ExternalsType,
@@ -51,8 +49,8 @@ import type {
 	Iife,
 	ImportFunctionName,
 	ImportMetaName,
+	Incremental,
 	InfrastructureLogging,
-	Layer,
 	LazyCompilationOptions,
 	LibraryOptions,
 	Loader,
@@ -86,7 +84,7 @@ import type {
 	WatchOptions,
 	WebassemblyModuleFilename,
 	WorkerPublicPath
-} from "./zod";
+} from "./types";
 
 export const getNormalizedRspackOptions = (
 	config: RspackOptions
@@ -213,7 +211,8 @@ export const getNormalizedRspackOptions = (
 					output.devtoolFallbackModuleFilenameTemplate,
 				chunkLoadTimeout: output.chunkLoadTimeout,
 				charset: output.charset,
-				environment: cloneObject(output.environment)
+				environment: cloneObject(output.environment),
+				compareBeforeEmit: output.compareBeforeEmit
 			};
 		}),
 		resolve: nestedConfig(config.resolve, resolve => ({
@@ -306,15 +305,35 @@ export const getNormalizedRspackOptions = (
 		plugins: nestedArray(config.plugins, p => [...p]),
 		experiments: nestedConfig(config.experiments, experiments => ({
 			...experiments,
+			cache: experiments.cache,
 			lazyCompilation: optionalNestedConfig(
 				experiments.lazyCompilation,
 				options => (options === true ? {} : options)
+			),
+			incremental: optionalNestedConfig(experiments.incremental, options =>
+				options === true
+					? ({
+							make: true,
+							dependenciesDiagnostics: true,
+							inferAsyncModules: true,
+							providedExports: true,
+							buildChunkGraph: true,
+							modulesHashes: true,
+							modulesCodegen: true,
+							modulesRuntimeRequirements: true,
+							chunksRuntimeRequirements: true,
+							chunksHashes: true,
+							chunksRender: true,
+							emitAssets: true
+						} satisfies Incremental)
+					: options
 			)
 		})),
 		watch: config.watch,
 		watchOptions: cloneObject(config.watchOptions),
 		devServer: config.devServer,
 		profile: config.profile,
+		amd: config.amd ? JSON.stringify(config.amd) : undefined,
 		bail: config.bail
 	};
 };
@@ -442,18 +461,21 @@ export type EntryNormalized = EntryDynamicNormalized | EntryStaticNormalized;
 export interface EntryStaticNormalized {
 	[k: string]: EntryDescriptionNormalized;
 }
-export interface EntryDescriptionNormalized {
+
+export type EntryDescriptionNormalized = Pick<
+	EntryDescription,
+	| "runtime"
+	| "chunkLoading"
+	| "asyncChunks"
+	| "publicPath"
+	| "baseUri"
+	| "filename"
+	| "library"
+	| "layer"
+> & {
 	import?: string[];
-	runtime?: EntryRuntime;
-	chunkLoading?: ChunkLoading;
-	asyncChunks?: AsyncChunks;
-	publicPath?: PublicPath;
-	baseUri?: BaseUri;
-	filename?: EntryFilename;
-	library?: LibraryOptions;
 	dependOn?: string[];
-	layer?: Layer;
-}
+};
 
 export interface OutputNormalized {
 	path?: Path;
@@ -503,6 +525,7 @@ export interface OutputNormalized {
 	charset?: boolean;
 	chunkLoadTimeout?: number;
 	cssHeadDataCompression?: boolean;
+	compareBeforeEmit?: boolean;
 }
 
 export interface ModuleOptionsNormalized {
@@ -514,12 +537,14 @@ export interface ModuleOptionsNormalized {
 }
 
 export interface ExperimentsNormalized {
+	cache?: ExperimentCacheOptions;
 	lazyCompilation?: false | LazyCompilationOptions;
 	asyncWebAssembly?: boolean;
 	outputModule?: boolean;
 	topLevelAwait?: boolean;
 	css?: boolean;
 	layers?: boolean;
+	incremental?: false | Incremental;
 	futureDefaults?: boolean;
 	rspackFuture?: RspackFutureOptions;
 }
@@ -565,5 +590,6 @@ export interface RspackOptionsNormalized {
 	ignoreWarnings?: IgnoreWarningsNormalized;
 	performance?: Performance;
 	profile?: Profile;
+	amd?: string;
 	bail?: Bail;
 }

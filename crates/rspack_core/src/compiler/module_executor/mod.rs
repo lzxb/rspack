@@ -8,19 +8,20 @@ use dashmap::{mapref::entry::Entry, DashSet};
 pub use execute::ExecuteModuleId;
 pub use execute::ExecutedRuntimeModule;
 use rspack_collections::{Identifier, IdentifierDashMap, IdentifierDashSet};
-use rspack_error::Result;
 use tokio::sync::{
   mpsc::{unbounded_channel, UnboundedSender},
   oneshot,
 };
+use tokio::task;
 
 use self::{
-  ctrl::{CtrlTask, Event},
-  entry::EntryParam,
+  ctrl::{CtrlTask, Event, ExecuteParam},
   execute::{ExecuteModuleResult, ExecuteTask},
   overwrite::OverwriteTask,
 };
 use super::make::{repair::MakeTaskContext, update_module_graph, MakeArtifact, MakeParam};
+use crate::cache::new_cache;
+use crate::incremental::Mutation;
 use crate::{
   task_loop::run_task_loop_with_event, Compilation, CompilationAsset, Context, Dependency,
   DependencyId, LoaderImportDependency, PublicPath,
@@ -28,7 +29,7 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct ModuleExecutor {
-  request_dep_map: DashMap<String, DependencyId>,
+  request_dep_map: DashMap<(String, Option<String>), DependencyId>,
   pub make_artifact: MakeArtifact,
 
   event_sender: Option<UnboundedSender<Event>>,
@@ -59,18 +60,30 @@ impl ModuleExecutor {
       let modules = std::mem::take(&mut make_artifact.make_failed_module);
       params.push(MakeParam::ForceBuildModules(modules));
     }
+    make_artifact.built_modules = Default::default();
+    make_artifact.revoked_modules = Default::default();
     make_artifact.diagnostics = Default::default();
     make_artifact.has_module_graph_change = false;
 
-    make_artifact = update_module_graph(compilation, make_artifact, params).unwrap_or_default();
+    make_artifact = update_module_graph(compilation, make_artifact, params)
+      .await
+      .unwrap_or_default();
 
-    let mut ctx = MakeTaskContext::new(compilation, make_artifact);
+    let mut ctx = MakeTaskContext::new(
+      compilation,
+      make_artifact,
+      new_cache(
+        compilation.options.clone(),
+        compilation.input_filesystem.clone(),
+      ),
+    );
     let (event_sender, event_receiver) = unbounded_channel();
     let (stop_sender, stop_receiver) = oneshot::channel();
     self.event_sender = Some(event_sender.clone());
     self.stop_receiver = Some(stop_receiver);
-
-    tokio::spawn(async move {
+    // avoid coop budget consumed to zero cause hang risk
+    // related to https://tokio.rs/blog/2020-04-preemption
+    tokio::spawn(task::unconstrained(async move {
       let _ = run_task_loop_with_event(
         &mut ctx,
         vec![Box::new(CtrlTask::new(event_receiver))],
@@ -80,12 +93,13 @@ impl ModuleExecutor {
             event_sender: event_sender.clone(),
           })
         },
-      );
+      )
+      .await;
 
       stop_sender
         .send(ctx.transform_to_make_artifact())
         .expect("should success");
-    });
+    }));
   }
 
   pub async fn hook_after_finish_modules(&mut self, compilation: &mut Compilation) {
@@ -135,8 +149,20 @@ impl ModuleExecutor {
     compilation.extend_diagnostics(diagnostics);
 
     let built_modules = self.make_artifact.take_built_modules();
+    if let Some(mutations) = compilation.incremental.mutations_write() {
+      for id in &built_modules {
+        mutations.add(Mutation::ModuleRemove { module: *id });
+      }
+    }
     for id in built_modules {
       compilation.built_modules.insert(id);
+    }
+
+    let revoked_modules = self.make_artifact.take_revoked_modules();
+    if let Some(mutations) = compilation.incremental.mutations_write() {
+      for id in revoked_modules {
+        mutations.add(Mutation::ModuleRemove { module: id });
+      }
     }
 
     let code_generated_modules = std::mem::take(&mut self.code_generated_modules);
@@ -172,12 +198,12 @@ impl ModuleExecutor {
     base_uri: Option<String>,
     original_module_context: Option<Context>,
     original_module_identifier: Option<Identifier>,
-  ) -> Result<ExecuteModuleResult> {
+  ) -> ExecuteModuleResult {
     let sender = self
       .event_sender
       .as_ref()
       .expect("should have event sender");
-    let (param, dep_id) = match self.request_dep_map.entry(request.clone()) {
+    let (param, dep_id) = match self.request_dep_map.entry((request.clone(), layer.clone())) {
       Entry::Vacant(v) => {
         let dep = LoaderImportDependency::new(
           request.clone(),
@@ -185,11 +211,11 @@ impl ModuleExecutor {
         );
         let dep_id = *dep.id();
         v.insert(dep_id);
-        (EntryParam::Entry(Box::new(dep)), dep_id)
+        (ExecuteParam::Entry(Box::new(dep), layer.clone()), dep_id)
       }
       Entry::Occupied(v) => {
         let dep_id = *v.get();
-        (EntryParam::DependencyId(dep_id, sender.clone()), dep_id)
+        (ExecuteParam::DependencyId(dep_id), dep_id)
       }
     };
 
@@ -209,7 +235,7 @@ impl ModuleExecutor {
     let (execute_result, assets, code_generated_modules, executed_runtime_modules) =
       rx.await.expect("should receiver success");
 
-    if let Ok(execute_result) = &execute_result
+    if execute_result.error.is_none()
       && let Some(original_module_identifier) = original_module_identifier
     {
       self

@@ -13,49 +13,20 @@ export type RawLazyCompilationTest = RegExp | ((m: JsModule) => boolean);
 
 /* -- napi-rs generated below -- */
 
-export class ExternalObject<T> {
+export declare class ExternalObject<T> {
   readonly '': {
     readonly '': unique symbol
     [K: symbol]: T
   }
 }
-export class DependenciesBlockDto {
-  get dependencies(): Array<DependencyDto>
-  get blocks(): Array<DependenciesBlockDto>
-}
-export type DependenciesBlockDTO = DependenciesBlockDto
-
-export class DependenciesDto {
-  get fileDependencies(): Array<string>
-  get addedFileDependencies(): Array<string>
-  get removedFileDependencies(): Array<string>
-  get contextDependencies(): Array<string>
-  get addedContextDependencies(): Array<string>
-  get removedContextDependencies(): Array<string>
-  get missingDependencies(): Array<string>
-  get addedMissingDependencies(): Array<string>
-  get removedMissingDependencies(): Array<string>
-  get buildDependencies(): Array<string>
-  get addedBuildDependencies(): Array<string>
-  get removedBuildDependencies(): Array<string>
-}
-export type DependenciesDTO = DependenciesDto
-
-export class DependencyDto {
-  get type(): string
-  get category(): string
-  get request(): string | undefined
-}
-export type DependencyDTO = DependencyDto
-
-export class EntryDataDto {
-  get dependencies(): Array<DependencyDTO>
-  get includeDependencies(): Array<DependencyDTO>
+export declare class EntryDataDto {
+  get dependencies(): JsDependency[]
+  get includeDependencies(): JsDependency[]
   get options(): EntryOptionsDto
 }
 export type EntryDataDTO = EntryDataDto
 
-export class EntryOptionsDto {
+export declare class EntryOptionsDto {
   get name(): string | undefined
   set name(name: string | undefined)
   get runtime(): false | string | undefined
@@ -75,12 +46,13 @@ export class EntryOptionsDto {
 }
 export type EntryOptionsDTO = EntryOptionsDto
 
-export class JsCompilation {
+export declare class JsCompilation {
   updateAsset(filename: string, newSourceOrFunction: JsCompatSource | ((source: JsCompatSource) => JsCompatSource), assetInfoUpdateOrFunction?: JsAssetInfo | ((assetInfo: JsAssetInfo) => JsAssetInfo)): void
   getAssets(): Readonly<JsAsset>[]
   getAsset(name: string): JsAsset | null
   getAssetSource(name: string): JsCompatSource | null
-  get modules(): Array<ModuleDTO>
+  get modules(): Array<JsModule>
+  get builtModules(): Array<JsModule>
   getOptimizationBailout(): Array<JsStatsOptimizationBailout>
   getChunks(): Array<JsChunk>
   getNamedChunkKeys(): Array<string>
@@ -98,7 +70,7 @@ export class JsCompilation {
   get entrypoints(): Record<string, JsChunkGroup>
   get chunkGroups(): Array<JsChunkGroup>
   get hash(): string | null
-  dependencies(): DependenciesDto
+  dependencies(): JsDependencies
   pushDiagnostic(diagnostic: JsRspackDiagnostic): void
   spliceDiagnostic(start: number, end: number, replaceWith: Array<JsRspackDiagnostic>): void
   pushNativeDiagnostic(diagnostic: ExternalObject<'Diagnostic'>): void
@@ -114,37 +86,72 @@ export class JsCompilation {
   addContextDependencies(deps: Array<string>): void
   addMissingDependencies(deps: Array<string>): void
   addBuildDependencies(deps: Array<string>): void
-  rebuildModule(moduleIdentifiers: Array<string>, f: (...args: any[]) => any): void
-  importModule(request: string, layer: string | undefined | null, publicPath: JsFilename | undefined | null, baseUri: string | undefined | null, originalModule: string | undefined | null, originalModuleContext: string | undefined | null, callback: (...args: any[]) => any): void
+  /**
+   * This is a very unsafe function.
+   * Please don't use this at the moment.
+   * Using async and mutable reference to `Compilation` at the same time would likely to cause data races.
+   */
+  rebuildModule(moduleIdentifiers: Array<string>, f: any): void
+  importModule(request: string, layer: string | undefined | null, publicPath: JsFilename | undefined | null, baseUri: string | undefined | null, originalModule: string | undefined | null, originalModuleContext: string | undefined | null, callback: any): void
   get entries(): JsEntries
   addRuntimeModule(chunkUkey: number, runtimeModule: JsAddingRuntimeModule): void
+  get moduleGraph(): JsModuleGraph
 }
 
-export class JsContextModuleFactoryAfterResolveData {
+export declare class JsContextModuleFactoryAfterResolveData {
   get resource(): string
   set resource(resource: string)
   get context(): string
   set context(context: string)
   get request(): string
   set request(request: string)
-  get regExp(): RawRegex | undefined
-  set regExp(rawRegExp: RawRegex | undefined)
+  get regExp(): RegExp | undefined
+  set regExp(rawRegExp: RegExp | undefined)
   get recursive(): boolean
   set recursive(recursive: boolean)
+  get dependencies(): JsDependency[]
 }
 
-export class JsContextModuleFactoryBeforeResolveData {
+export declare class JsContextModuleFactoryBeforeResolveData {
   get context(): string
   set context(context: string)
   get request(): string
   set request(request: string)
-  get regExp(): RawRegex | undefined
-  set regExp(rawRegExp: RawRegex | undefined)
+  get regExp(): RegExp | undefined
+  set regExp(rawRegExp: RegExp | undefined)
   get recursive(): boolean
   set recursive(recursive: boolean)
 }
 
-export class JsEntries {
+export declare class JsDependencies {
+  get fileDependencies(): Array<string>
+  get addedFileDependencies(): Array<string>
+  get removedFileDependencies(): Array<string>
+  get contextDependencies(): Array<string>
+  get addedContextDependencies(): Array<string>
+  get removedContextDependencies(): Array<string>
+  get missingDependencies(): Array<string>
+  get addedMissingDependencies(): Array<string>
+  get removedMissingDependencies(): Array<string>
+  get buildDependencies(): Array<string>
+  get addedBuildDependencies(): Array<string>
+  get removedBuildDependencies(): Array<string>
+}
+
+export declare class JsDependenciesBlock {
+  get dependencies(): JsDependency[]
+  get blocks(): JsDependenciesBlock[]
+}
+
+export declare class JsDependency {
+  get type(): string
+  get category(): string
+  get request(): string | undefined
+  get critical(): boolean
+  set critical(val: boolean)
+}
+
+export declare class JsEntries {
   clear(): void
   get size(): number
   has(key: string): boolean
@@ -155,24 +162,7 @@ export class JsEntries {
   values(): Array<EntryDataDto>
 }
 
-export class JsResolver {
-  resolveSync(path: string, request: string): string | false
-  withOptions(raw?: RawResolveOptionsWithDependencyType | undefined | null): this
-}
-
-export class JsResolverFactory {
-  constructor()
-  get(type: string, options?: RawResolveOptionsWithDependencyType): JsResolver
-}
-
-export class JsStats {
-  toJson(jsOptions: JsStatsOptions): JsStatsCompilation
-  hasWarnings(): boolean
-  hasErrors(): boolean
-  getLogging(acceptedTypes: number): Array<JsStatsLogging>
-}
-
-export class ModuleDto {
+export declare class JsModule {
   get context(): string | undefined
   get originalSource(): JsCompatSource | undefined
   get resource(): string | undefined
@@ -180,16 +170,42 @@ export class ModuleDto {
   get nameForCondition(): string | undefined
   get request(): string | undefined
   get userRequest(): string | undefined
+  set userRequest(val: string)
   get rawRequest(): string | undefined
   get factoryMeta(): JsFactoryMeta | undefined
   get type(): string
   get layer(): string | undefined
-  get blocks(): Array<DependenciesBlockDto>
+  get blocks(): JsDependenciesBlock[]
+  get dependencies(): JsDependency[]
   size(ty?: string | undefined | null): number
+  get modules(): JsModule[] | undefined
+  get useSourceMap(): boolean
 }
-export type ModuleDTO = ModuleDto
 
-export class Rspack {
+export declare class JsModuleGraph {
+  getModule(jsDependency: JsDependency): JsModule | null
+  getUsedExports(jsModule: JsModule, jsRuntime: string | Array<string>): boolean | Array<string> | null
+  getIssuer(module: JsModule): JsModule | null
+}
+
+export declare class JsResolver {
+  resolveSync(path: string, request: string): string | false
+  withOptions(raw?: RawResolveOptionsWithDependencyType | undefined | null): JsResolver
+}
+
+export declare class JsResolverFactory {
+  constructor()
+  get(type: string, options?: RawResolveOptionsWithDependencyType): JsResolver
+}
+
+export declare class JsStats {
+  toJson(jsOptions: JsStatsOptions): JsStatsCompilation
+  hasWarnings(): boolean
+  hasErrors(): boolean
+  getLogging(acceptedTypes: number): Array<JsStatsLogging>
+}
+
+export declare class Rspack {
   constructor(options: RawOptions, builtinPlugins: Array<BuiltinPlugin>, registerJsTaps: RegisterJsTaps, outputFilesystem: ThreadsafeNodeFS, resolverFactoryReference: JsResolverFactory)
   setNonSkippableRegisters(kinds: Array<RegisterJsTapKind>): void
   /** Build with the given option passed to the constructor */
@@ -198,29 +214,29 @@ export class Rspack {
   rebuild(changed_files: string[], removed_files: string[], callback: (err: null | Error) => void): void
 }
 
-export function __chunk_graph_inner_get_chunk_entry_dependent_chunks_iterable(jsChunkUkey: number, compilation: JsCompilation): Array<JsChunk>
+export declare function __chunk_graph_inner_get_chunk_entry_dependent_chunks_iterable(jsChunkUkey: number, jsCompilation: JsCompilation): Array<JsChunk>
 
-export function __chunk_graph_inner_get_chunk_entry_modules(jsChunkUkey: number, compilation: JsCompilation): Array<JsModule>
+export declare function __chunk_graph_inner_get_chunk_entry_modules(jsChunkUkey: number, jsCompilation: JsCompilation): JsModule[]
 
-export function __chunk_graph_inner_get_chunk_modules(jsChunkUkey: number, compilation: JsCompilation): Array<JsModule>
+export declare function __chunk_graph_inner_get_chunk_modules(jsChunkUkey: number, jsCompilation: JsCompilation): JsModule[]
 
-export function __chunk_graph_inner_get_chunk_modules_iterable_by_source_type(jsChunkUkey: number, sourceType: string, compilation: JsCompilation): Array<JsModule>
+export declare function __chunk_graph_inner_get_chunk_modules_iterable_by_source_type(jsChunkUkey: number, sourceType: string, jsCompilation: JsCompilation): JsModule[]
 
-export function __chunk_group_inner_get_chunk_group(ukey: number, compilation: JsCompilation): JsChunkGroup
+export declare function __chunk_group_inner_get_chunk_group(ukey: number, jsCompilation: JsCompilation): JsChunkGroup
 
-export function __chunk_inner_can_be_initial(jsChunkUkey: number, compilation: JsCompilation): boolean
+export declare function __chunk_inner_can_be_initial(jsChunkUkey: number, jsCompilation: JsCompilation): boolean
 
-export function __chunk_inner_get_all_async_chunks(jsChunkUkey: number, compilation: JsCompilation): Array<JsChunk>
+export declare function __chunk_inner_get_all_async_chunks(jsChunkUkey: number, jsCompilation: JsCompilation): Array<JsChunk>
 
-export function __chunk_inner_get_all_initial_chunks(jsChunkUkey: number, compilation: JsCompilation): Array<JsChunk>
+export declare function __chunk_inner_get_all_initial_chunks(jsChunkUkey: number, jsCompilation: JsCompilation): Array<JsChunk>
 
-export function __chunk_inner_get_all_referenced_chunks(jsChunkUkey: number, compilation: JsCompilation): Array<JsChunk>
+export declare function __chunk_inner_get_all_referenced_chunks(jsChunkUkey: number, jsCompilation: JsCompilation): Array<JsChunk>
 
-export function __chunk_inner_has_runtime(jsChunkUkey: number, compilation: JsCompilation): boolean
+export declare function __chunk_inner_has_runtime(jsChunkUkey: number, jsCompilation: JsCompilation): boolean
 
-export function __chunk_inner_is_only_initial(jsChunkUkey: number, compilation: JsCompilation): boolean
+export declare function __chunk_inner_is_only_initial(jsChunkUkey: number, jsCompilation: JsCompilation): boolean
 
-export function __entrypoint_inner_get_runtime_chunk(ukey: number, compilation: JsCompilation): JsChunk
+export declare function __entrypoint_inner_get_runtime_chunk(ukey: number, jsCompilation: JsCompilation): JsChunk
 
 export interface BuiltinPlugin {
   name: BuiltinPluginName
@@ -228,7 +244,7 @@ export interface BuiltinPlugin {
   canInherentFromParent?: boolean
 }
 
-export enum BuiltinPluginName {
+export declare enum BuiltinPluginName {
   DefinePlugin = 'DefinePlugin',
   ProvidePlugin = 'ProvidePlugin',
   BannerPlugin = 'BannerPlugin',
@@ -253,6 +269,7 @@ export enum BuiltinPluginName {
   WebWorkerTemplatePlugin = 'WebWorkerTemplatePlugin',
   MergeDuplicateChunksPlugin = 'MergeDuplicateChunksPlugin',
   SplitChunksPlugin = 'SplitChunksPlugin',
+  RemoveDuplicateModulesPlugin = 'RemoveDuplicateModulesPlugin',
   ShareRuntimePlugin = 'ShareRuntimePlugin',
   ContainerPlugin = 'ContainerPlugin',
   ContainerReferencePlugin = 'ContainerReferencePlugin',
@@ -291,6 +308,10 @@ export enum BuiltinPluginName {
   SizeLimitsPlugin = 'SizeLimitsPlugin',
   NoEmitOnErrorsPlugin = 'NoEmitOnErrorsPlugin',
   ContextReplacementPlugin = 'ContextReplacementPlugin',
+  DllEntryPlugin = 'DllEntryPlugin',
+  DllReferenceAgencyPlugin = 'DllReferenceAgencyPlugin',
+  LibManifestPlugin = 'LibManifestPlugin',
+  FlagAllModulesAsUsedPlugin = 'FlagAllModulesAsUsedPlugin',
   HttpExternalsRspackPlugin = 'HttpExternalsRspackPlugin',
   CopyRspackPlugin = 'CopyRspackPlugin',
   HtmlRspackPlugin = 'HtmlRspackPlugin',
@@ -302,18 +323,19 @@ export enum BuiltinPluginName {
   LazyCompilationPlugin = 'LazyCompilationPlugin'
 }
 
-export function cleanupGlobalTrace(): void
+export declare function cleanupGlobalTrace(): void
 
 export interface ContextInfo {
   issuer: string
 }
 
-export function formatDiagnostic(diagnostic: JsDiagnostic): ExternalObject<'Diagnostic'>
+export declare function formatDiagnostic(diagnostic: JsDiagnostic): ExternalObject<'Diagnostic'>
 
 export interface JsAddingRuntimeModule {
   name: string
   generator: () => String
-  cacheable: boolean
+  dependentHash: boolean
+  fullHash: boolean
   isolate: boolean
   stage: number
 }
@@ -387,6 +409,8 @@ export interface JsAssetInfo {
    */
   contenthash: Array<string>
   sourceFilename?: string
+  /** when asset was created from a source file (potentially transformed), it should be flagged as copied */
+  copied?: boolean
   /**
    * size in bytes, only set after asset has been emitted
    * when asset is only used for development and doesn't count towards user-facing assets
@@ -431,13 +455,29 @@ export interface JsBeforeResolveArgs {
   issuer: string
 }
 
+export interface JsBuildMeta {
+  strictEsmModule: boolean
+  hasTopLevelAwait: boolean
+  esm: boolean
+  exportsType: 'unset' | 'default' | 'namespace' | 'flagged' | 'dynamic'
+  defaultObject: 'false' | 'redirect' | JsBuildMetaDefaultObjectRedirectWarn
+  moduleArgument: 'module' | 'webpackModule'
+  exportsArgument: 'exports' | 'webpackExports'
+  sideEffectFree?: boolean
+  exportsFinalName?: Array<[string, string]> | undefined
+}
+
+export interface JsBuildMetaDefaultObjectRedirectWarn {
+  redirectWarn: JsDefaultObjectRedirectWarnObject
+}
+
 export interface JsBuildTimeExecutionOption {
   publicPath?: string
   baseUri?: string
 }
 
 export interface JsCacheGroupTestCtx {
-  module: ModuleDTO
+  module: JsModule
 }
 
 export interface JsChunk {
@@ -474,15 +514,8 @@ export interface JsChunkGroup {
 }
 
 export interface JsChunkGroupOrigin {
-  module?: ModuleDTO
+  module?: JsModule | undefined
   request?: string
-}
-
-export interface JsChunkPathData {
-  id?: string
-  name?: string
-  hash?: string
-  contentHash?: string | Record<string, string>
 }
 
 export interface JsCodegenerationResult {
@@ -502,6 +535,10 @@ export interface JsCreateData {
   request: string
   userRequest: string
   resource: string
+}
+
+export interface JsDefaultObjectRedirectWarnObject {
+  ignore: boolean
 }
 
 export interface JsDiagnostic {
@@ -525,8 +562,8 @@ export interface JsDiagnosticLocation {
 }
 
 export interface JsEntryData {
-  dependencies: Array<DependencyDTO>
-  includeDependencies: Array<DependencyDTO>
+  dependencies: Array<JsDependency>
+  includeDependencies: Array<JsDependency>
   options: JsEntryOptions
 }
 
@@ -645,6 +682,7 @@ export interface JsLoaderContext {
   loaderItems: Array<JsLoaderItem>
   loaderIndex: number
   loaderState: Readonly<JsLoaderState>
+  __internal__error?: JsRspackError
 }
 
 export interface JsLoaderItem {
@@ -655,23 +693,9 @@ export interface JsLoaderItem {
   pitchExecuted: boolean
 }
 
-export enum JsLoaderState {
+export declare enum JsLoaderState {
   Pitching = 'Pitching',
   Normal = 'Normal'
-}
-
-export interface JsModule {
-  context?: string
-  originalSource?: JsCompatSource
-  resource?: string
-  moduleIdentifier: string
-  nameForCondition?: string
-  request?: string
-  userRequest?: string
-  rawRequest?: string
-  factoryMeta?: JsFactoryMeta
-  type: string
-  layer?: string
 }
 
 export interface JsModuleDescriptor {
@@ -701,7 +725,13 @@ export interface JsPathData {
   runtime?: string
   url?: string
   id?: string
-  chunk?: JsChunkPathData
+  chunk?: JsPathDataChunkLike
+}
+
+export interface JsPathDataChunkLike {
+  name?: string
+  hash?: string
+  id?: string
 }
 
 export interface JsResolveArgs {
@@ -741,7 +771,7 @@ export interface JsRspackError {
   hideStack?: boolean
 }
 
-export enum JsRspackSeverity {
+export declare enum JsRspackSeverity {
   Error = 'Error',
   Warn = 'Warn'
 }
@@ -790,6 +820,7 @@ export interface JsStatsAssetInfo {
   development?: boolean
   hotModuleReplacement?: boolean
   sourceFilename?: string
+  copied?: boolean
   immutable?: boolean
   javascriptModule?: boolean
   chunkhash: Array<string>
@@ -1015,15 +1046,18 @@ export interface JsStatsWarning {
 }
 
 export interface JsTap {
-  function: (...args: any[]) => any
+  function: any
   stage: number
 }
 
-export interface NodeFS {
-  writeFile: (...args: any[]) => any
-  removeFile: (...args: any[]) => any
-  mkdir: (...args: any[]) => any
-  mkdirp: (...args: any[]) => any
+export interface NodeFsStats {
+  isFile: boolean
+  isDirectory: boolean
+  atimeMs: number
+  mtimeMs: number
+  ctimeMs: number
+  birthtimeMs: number
+  size: number
 }
 
 export interface PathWithInfo {
@@ -1177,10 +1211,10 @@ export interface RawContainerReferencePluginOptions {
 }
 
 export interface RawContextReplacementPluginOptions {
-  resourceRegExp: RawRegex
+  resourceRegExp: RegExp
   newContentResource?: string
   newContentRecursive?: boolean
-  newContentRegExp?: RawRegex
+  newContentRegExp?: RegExp
   newContentCreateContextMap?: Record<string, string>
 }
 
@@ -1255,6 +1289,35 @@ export interface RawCssParserOptions {
   namedExports?: boolean
 }
 
+export interface RawDllEntryPluginOptions {
+  context: string
+  entries: Array<string>
+  name: string
+}
+
+export interface RawDllManifest {
+  content: Record<string, RawDllManifestContentItem>
+  name?: string
+  type?: string
+}
+
+export interface RawDllManifestContentItem {
+  buildMeta?: JsBuildMeta
+  exports?: string[] | true
+  id?: string
+}
+
+export interface RawDllReferenceAgencyPluginOptions {
+  context?: string
+  name?: string
+  extensions: Array<string>
+  scope?: string
+  sourceType?: string
+  type: string
+  content?: Record<string, RawDllManifestContentItem>
+  manifest?: RawDllManifest
+}
+
 export interface RawDraft {
   customMedia: boolean
 }
@@ -1272,6 +1335,7 @@ export interface RawEntryDynamicResult {
 export interface RawEnvironment {
   const?: boolean
   arrowFunction?: boolean
+  nodePrefixForCoreModules?: boolean
 }
 
 export interface RawEvalDevToolModulePluginOptions {
@@ -1280,10 +1344,28 @@ export interface RawEvalDevToolModulePluginOptions {
   sourceUrlComment?: string
 }
 
+export interface RawExperimentCacheOptionsCommon {
+  type: "disable"|"memory"
+}
+
+export interface RawExperimentCacheOptionsPersistent {
+  type: "persistent"
+  snapshot: RawExperimentSnapshotOptions
+  storage: Array<RawStorageOptions>
+}
+
 export interface RawExperiments {
   layers: boolean
   topLevelAwait: boolean
+  incremental?: RawIncremental
   rspackFuture: RawRspackFuture
+  cache: RawExperimentCacheOptionsPersistent | RawExperimentCacheOptionsCommon
+}
+
+export interface RawExperimentSnapshotOptions {
+  immutablePaths: Array<string|RegExp>
+  unmanagedPaths: Array<string|RegExp>
+  managedPaths: Array<string|RegExp>
 }
 
 export interface RawExposeOptions {
@@ -1332,6 +1414,10 @@ export interface RawFallbackCacheGroupOptions {
   automaticNameDelimiter?: string
 }
 
+export interface RawFlagAllModulesAsUsedPluginOptions {
+  explanation: string
+}
+
 export interface RawFuncUseCtx {
   resource?: string
   realResource?: string
@@ -1356,7 +1442,7 @@ export interface RawHtmlRspackPluginBaseOptions {
 
 export interface RawHtmlRspackPluginOptions {
   /** emitted file name in output path */
-  filename?: string
+  filename?: string[]
   /** template html file */
   template?: string
   templateFn?: (data: string) => Promise<string>
@@ -1391,6 +1477,21 @@ export interface RawIgnorePluginOptions {
   checkResource?: (resource: string, context: string) => boolean
 }
 
+export interface RawIncremental {
+  make: boolean
+  inferAsyncModules: boolean
+  providedExports: boolean
+  dependenciesDiagnostics: boolean
+  buildChunkGraph: boolean
+  modulesHashes: boolean
+  modulesCodegen: boolean
+  modulesRuntimeRequirements: boolean
+  chunksRuntimeRequirements: boolean
+  chunksHashes: boolean
+  chunksRender: boolean
+  emitAssets: boolean
+}
+
 export interface RawInfo {
   immutable?: boolean
   minimized?: boolean
@@ -1403,28 +1504,58 @@ export interface RawInfo {
 }
 
 export interface RawJavascriptParserOptions {
-  dynamicImportMode: string
-  dynamicImportPreload: string
-  dynamicImportPrefetch: string
+  dynamicImportMode?: string
+  dynamicImportPreload?: string
+  dynamicImportPrefetch?: string
   dynamicImportFetchPriority?: string
-  url: string
-  exprContextCritical: boolean
-  wrappedContextCritical: boolean
+  url?: string
+  exprContextCritical?: boolean
+  wrappedContextCritical?: boolean
+  wrappedContextRegExp?: RegExp
   exportsPresence?: string
   importExportsPresence?: string
   reexportExportsPresence?: string
-  strictExportPresence: boolean
-  worker: Array<string>
+  strictExportPresence?: boolean
+  worker?: Array<string>
   overrideStrict?: string
-  importMeta: boolean
+  importMeta?: boolean
+  /**
+   * This option is experimental in Rspack only and subject to change or be removed anytime.
+   * @experimental
+   */
+  requireAsExpression?: boolean
+  /**
+   * This option is experimental in Rspack only and subject to change or be removed anytime.
+   * @experimental
+   */
+  requireDynamic?: boolean
+  /**
+   * This option is experimental in Rspack only and subject to change or be removed anytime.
+   * @experimental
+   */
+  requireResolve?: boolean
+  /**
+   * This option is experimental in Rspack only and subject to change or be removed anytime.
+   * @experimental
+   */
+  importDynamic?: boolean
 }
 
 export interface RawLazyCompilationOption {
-  module: (err: Error | null, arg: RawModuleArg) => any
+  module: ((err: Error | null, arg: RawModuleArg) => RawModuleInfo)
   test?: RawLazyCompilationTest
   entries: boolean
   imports: boolean
   cacheable: boolean
+}
+
+export interface RawLibManifestPluginOptions {
+  context?: string
+  entryOnly?: boolean
+  name?: JsFilename
+  path: JsFilename
+  format?: boolean
+  type?: string
 }
 
 export interface RawLightningCssBrowsers {
@@ -1445,6 +1576,7 @@ export interface RawLightningCssMinimizerOptions {
   include?: number
   exclude?: number
   draft?: RawDraft
+  drafts?: RawDraft
   nonStandard?: RawNonStandard
   pseudoClasses?: RawLightningCssPseudoClasses
   unusedSymbols: Array<string>
@@ -1591,6 +1723,7 @@ export interface RawOptions {
   experiments: RawExperiments
   node?: RawNodeOption
   profile: boolean
+  amd?: string
   bail: boolean
   __references: Record<string, any>
 }
@@ -1639,6 +1772,7 @@ export interface RawOutputOptions {
   workerPublicPath: string
   scriptType: "module" | "text/javascript" | "false"
   environment: RawEnvironment
+  compareBeforeEmit: boolean
 }
 
 export interface RawParserOptions {
@@ -1674,11 +1808,6 @@ export interface RawProvideOptions {
   singleton?: boolean
   requiredVersion?: string | false | undefined
   strictVersion?: boolean
-}
-
-export interface RawRegex {
-  source: string
-  flags: string
 }
 
 export interface RawRelated {
@@ -1748,19 +1877,19 @@ export interface RawResolveTsconfigOptions {
 }
 
 export interface RawRspackFuture {
-  newIncremental: boolean
+
 }
 
 export interface RawRuleSetCondition {
   type: RawRuleSetConditionType
   string?: string
-  regexp?: RawRegex
+  regexp?: RegExp
   logical?: Array<RawRuleSetLogicalConditions>
   array?: Array<RawRuleSetCondition>
   func?: (value: string) => boolean
 }
 
-export enum RawRuleSetConditionType {
+export declare enum RawRuleSetConditionType {
   string = 'string',
   regexp = 'regexp',
   logical = 'logical',
@@ -1805,7 +1934,9 @@ export interface RawSourceMapDevToolPluginOptions {
   noSources?: boolean
   publicPath?: string
   sourceRoot?: string
-  test?: (text: string) => boolean
+  test?: string | RegExp | (string | RegExp)[]
+  include?: string | RegExp | (string | RegExp)[]
+  exclude?: string | RegExp | (string | RegExp)[]
 }
 
 export interface RawSplitChunkSizes {
@@ -1835,6 +1966,11 @@ export interface RawSplitChunksOptions {
 
 export interface RawStatsOptions {
   colors: boolean
+}
+
+export interface RawStorageOptions {
+  type: "filesystem"
+  directory: string
 }
 
 export interface RawSwcJsMinimizerOptions {
@@ -1869,9 +2005,9 @@ export interface RawTrustedTypes {
  * Author Donny/강동윤
  * Copyright (c)
  */
-export function registerGlobalTrace(filter: string, layer: "chrome" | "logger", output: string): void
+export declare function registerGlobalTrace(filter: string, layer: "chrome" | "logger"| "console", output: string): void
 
-export enum RegisterJsTapKind {
+export declare enum RegisterJsTapKind {
   CompilerThisCompilation = 0,
   CompilerCompilation = 1,
   CompilerMake = 2,
@@ -1965,5 +2101,8 @@ export interface ThreadsafeNodeFS {
   mkdir: (name: string) => Promise<void> | void
   mkdirp: (name: string) => Promise<string | void> | string | void
   removeDirAll: (name: string) => Promise<string | void> | string | void
+  readDir: (name: string) => Promise<string[] | void> | string[] | void
+  readFile: (name: string) => Promise<Buffer | string | void> | Buffer | string | void
+  stat: (name: string) => Promise<NodeFsStats | void> | NodeFsStats | void
+  lstat: (name: string) => Promise<NodeFsStats | void> | NodeFsStats | void
 }
-

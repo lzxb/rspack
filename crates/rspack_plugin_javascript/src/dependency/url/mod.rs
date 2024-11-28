@@ -1,7 +1,7 @@
 use rspack_core::{
   get_dependency_used_by_exports_condition, module_id, AsContextDependency, Compilation,
-  Dependency, DependencyCategory, DependencyCondition, DependencyId, DependencyTemplate,
-  DependencyType, ModuleDependency, RealDependencyLocation, RuntimeGlobals, RuntimeSpec,
+  Dependency, DependencyCategory, DependencyCondition, DependencyId, DependencyRange,
+  DependencyTemplate, DependencyType, ModuleDependency, RuntimeGlobals, RuntimeSpec,
   TemplateContext, TemplateReplaceSource, UsedByExports,
 };
 use swc_core::ecma::atoms::Atom;
@@ -10,8 +10,8 @@ use swc_core::ecma::atoms::Atom;
 pub struct URLDependency {
   id: DependencyId,
   request: Atom,
-  range: RealDependencyLocation,
-  range_url: (u32, u32),
+  range: DependencyRange,
+  range_url: DependencyRange,
   used_by_exports: Option<UsedByExports>,
   relative: bool,
 }
@@ -19,8 +19,8 @@ pub struct URLDependency {
 impl URLDependency {
   pub fn new(
     request: Atom,
-    range: RealDependencyLocation,
-    range_url: (u32, u32),
+    range: DependencyRange,
+    range_url: DependencyRange,
     relative: bool,
   ) -> Self {
     Self {
@@ -47,7 +47,7 @@ impl Dependency for URLDependency {
     &DependencyType::NewUrl
   }
 
-  fn range(&self) -> Option<&RealDependencyLocation> {
+  fn range(&self) -> Option<&DependencyRange> {
     Some(&self.range)
   }
 
@@ -105,8 +105,8 @@ impl DependencyTemplate for URLDependency {
     } else {
       runtime_requirements.insert(RuntimeGlobals::BASE_URI);
       source.replace(
-        self.range_url.0,
-        self.range_url.1,
+        self.range_url.start,
+        self.range_url.end,
         format!(
           "/* asset import */{}({}), {}",
           RuntimeGlobals::REQUIRE,

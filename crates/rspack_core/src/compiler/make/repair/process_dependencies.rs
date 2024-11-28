@@ -13,13 +13,13 @@ pub struct ProcessDependenciesTask {
   pub original_module_identifier: ModuleIdentifier,
   pub dependencies: Vec<DependencyId>,
 }
-
+#[async_trait::async_trait]
 impl Task<MakeTaskContext> for ProcessDependenciesTask {
   fn get_task_type(&self) -> TaskType {
     TaskType::Sync
   }
 
-  fn sync_run(self: Box<Self>, context: &mut MakeTaskContext) -> TaskResult<MakeTaskContext> {
+  async fn main_run(self: Box<Self>, context: &mut MakeTaskContext) -> TaskResult<MakeTaskContext> {
     let Self {
       original_module_identifier,
       dependencies,
@@ -96,6 +96,7 @@ impl Task<MakeTaskContext> for ProcessDependenciesTask {
         })
         .clone();
       res.push(Box::new(FactorizeTask {
+        compilation_id: context.compilation_id,
         module_factory,
         original_module_identifier: Some(module.identifier()),
         original_module_context: module.get_context(),

@@ -8,29 +8,31 @@ use async_trait::async_trait;
 use json::JsonValue;
 use rspack_collections::{Identifiable, Identifier, IdentifierSet};
 use rspack_error::{Diagnosable, Diagnostic, Result};
-use rspack_fs::ReadableFileSystem;
+use rspack_fs::FileSystem;
 use rspack_hash::RspackHashDigest;
 use rspack_sources::Source;
 use rspack_util::atom::Atom;
 use rspack_util::ext::{AsAny, DynHash};
 use rspack_util::source_map::ModuleSourceMapConfig;
 use rustc_hash::FxHashSet as HashSet;
+use serde::Serialize;
 
 use crate::concatenated_module::ConcatenatedModule;
 use crate::dependencies_block::dependencies_block_update_hash;
 use crate::{
   AsyncDependenciesBlock, BoxDependency, ChunkGraph, ChunkUkey, CodeGenerationResult, Compilation,
-  CompilerOptions, ConcatenationScope, ConnectionState, Context, ContextModule, DependenciesBlock,
-  DependencyId, DependencyTemplate, ExportInfoProvided, ExternalModule, ModuleDependency,
-  ModuleGraph, ModuleLayer, ModuleType, NormalModule, RawModule, Resolve, RunnerContext,
-  RuntimeSpec, SelfModule, SharedPluginDriver, SourceType,
+  CompilationId, CompilerOptions, ConcatenationScope, ConnectionState, Context, ContextModule,
+  DependenciesBlock, DependencyId, DependencyTemplate, ExportInfoProvided, ExternalModule,
+  ModuleDependency, ModuleGraph, ModuleLayer, ModuleType, NormalModule, RawModule, Resolve,
+  ResolverFactory, RuntimeSpec, SelfModule, SharedPluginDriver, SourceType,
 };
 
-pub struct BuildContext<'a> {
-  pub runner_context: RunnerContext,
+pub struct BuildContext {
+  pub compilation_id: CompilationId,
+  pub compiler_options: Arc<CompilerOptions>,
+  pub resolver_factory: Arc<ResolverFactory>,
   pub plugin_driver: SharedPluginDriver,
-  pub compiler_options: &'a CompilerOptions,
-  pub fs: Arc<dyn ReadableFileSystem>,
+  pub fs: Arc<dyn FileSystem>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -50,7 +52,7 @@ pub struct BuildInfo {
   pub context_dependencies: HashSet<PathBuf>,
   pub missing_dependencies: HashSet<PathBuf>,
   pub build_dependencies: HashSet<PathBuf>,
-  pub harmony_named_exports: HashSet<Atom>,
+  pub esm_named_exports: HashSet<Atom>,
   pub all_star_exports: Vec<DependencyId>,
   pub need_create_require: bool,
   pub json_data: Option<JsonValue>,
@@ -68,7 +70,7 @@ impl Default for BuildInfo {
       context_dependencies: HashSet::default(),
       missing_dependencies: HashSet::default(),
       build_dependencies: HashSet::default(),
-      harmony_named_exports: HashSet::default(),
+      esm_named_exports: HashSet::default(),
       all_star_exports: Vec::default(),
       need_create_require: false,
       json_data: None,
@@ -78,7 +80,8 @@ impl Default for BuildInfo {
   }
 }
 
-#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BuildMetaExportsType {
   #[default]
   Unset,
@@ -96,7 +99,8 @@ pub enum ExportsType {
   Dynamic,
 }
 
-#[derive(Debug, Default, Clone, Copy, Hash)]
+#[derive(Debug, Default, Clone, Copy, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BuildMetaDefaultObject {
   #[default]
   False,
@@ -110,7 +114,8 @@ pub enum BuildMetaDefaultObject {
   },
 }
 
-#[derive(Debug, Default, Clone, Copy, Hash)]
+#[derive(Debug, Default, Clone, Copy, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ModuleArgument {
   #[default]
   Module,
@@ -126,7 +131,8 @@ impl Display for ModuleArgument {
   }
 }
 
-#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ExportsArgument {
   #[default]
   Exports,
@@ -142,16 +148,19 @@ impl Display for ExportsArgument {
   }
 }
 
-#[derive(Debug, Default, Clone, Hash)]
+#[derive(Debug, Default, Clone, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildMeta {
-  pub strict_harmony_module: bool,
+  pub strict_esm_module: bool,
   pub has_top_level_await: bool,
   pub esm: bool,
   pub exports_type: BuildMetaExportsType,
   pub default_object: BuildMetaDefaultObject,
   pub module_argument: ModuleArgument,
   pub exports_argument: ExportsArgument,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub side_effect_free: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub exports_final_name: Option<Vec<(String, String)>>,
 }
 
@@ -198,13 +207,14 @@ pub trait Module:
   fn readable_identifier(&self, _context: &Context) -> Cow<str>;
 
   /// The size of the original source, which will used as a parameter for code-splitting.
-  fn size(&self, source_type: Option<&SourceType>, compilation: &Compilation) -> f64;
+  /// Only when calculating the size of the RuntimeModule is the Compilation depended on
+  fn size(&self, source_type: Option<&SourceType>, compilation: Option<&Compilation>) -> f64;
 
   /// The actual build of the module, which will be called by the `Compilation`.
   /// Build can also returns the dependencies of the module, which will be used by the `Compilation` to build the dependency graph.
   async fn build(
     &mut self,
-    _build_context: BuildContext<'_>,
+    _build_context: BuildContext,
     _compilation: Option<&Compilation>,
   ) -> Result<BuildResult> {
     Ok(BuildResult {
@@ -248,11 +258,11 @@ pub trait Module:
     get_exports_type_impl(self.identifier(), self.build_meta(), module_graph, strict)
   }
 
-  fn get_strict_harmony_module(&self) -> bool {
+  fn get_strict_esm_module(&self) -> bool {
     self
       .build_meta()
       .as_ref()
-      .is_some_and(|m| m.strict_harmony_module)
+      .is_some_and(|m| m.strict_esm_module)
   }
 
   /// The actual code generation of the module, which will be called by the `Compilation`.
@@ -367,6 +377,10 @@ pub trait Module:
 
     false
   }
+
+  fn need_id(&self) -> bool {
+    true
+  }
 }
 
 fn get_exports_type_impl(
@@ -417,7 +431,7 @@ fn get_exports_type_impl(
             if matches!(export_info.provided(mg), Some(ExportInfoProvided::False)) {
               handle_default(default_object)
             } else {
-              let Some(target) = export_info.get_target(mg, None) else {
+              let Some(target) = export_info.get_target(mg) else {
                 return ExportsType::Dynamic;
               };
               if target
@@ -497,7 +511,7 @@ pub trait ModuleExt {
   fn boxed(self) -> Box<dyn Module>;
 }
 
-impl<T: Module + 'static> ModuleExt for T {
+impl<T: Module> ModuleExt for T {
   fn boxed(self) -> Box<dyn Module> {
     Box::new(self)
   }
@@ -642,6 +656,10 @@ mod test {
           unreachable!()
         }
 
+        fn remove_dependency_id(&mut self, _: DependencyId) {
+          unreachable!()
+        }
+
         fn get_dependencies(&self) -> &[DependencyId] {
           unreachable!()
         }
@@ -661,7 +679,11 @@ mod test {
           unreachable!()
         }
 
-        fn size(&self, _source_type: Option<&SourceType>, _compilation: &Compilation) -> f64 {
+        fn size(
+          &self,
+          _source_type: Option<&SourceType>,
+          _compilation: Option<&Compilation>,
+        ) -> f64 {
           unreachable!()
         }
 
@@ -671,7 +693,7 @@ mod test {
 
         async fn build(
           &mut self,
-          _build_context: BuildContext<'_>,
+          _build_context: BuildContext,
           _compilation: Option<&Compilation>,
         ) -> Result<BuildResult> {
           unreachable!()

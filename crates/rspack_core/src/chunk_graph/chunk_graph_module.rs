@@ -9,18 +9,18 @@ use rustc_hash::FxHasher;
 use tracing::instrument;
 
 use crate::{
-  get_chunk_group_from_ukey, AsyncDependenciesBlockIdentifier, ChunkByUkey, ChunkGroup,
-  ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Compilation, ModuleGraph, ModuleIdentifier,
-  RuntimeGlobals, RuntimeSpec, RuntimeSpecMap, RuntimeSpecSet,
+  AsyncDependenciesBlockIdentifier, ChunkByUkey, ChunkGroup, ChunkGroupByUkey, ChunkGroupUkey,
+  ChunkUkey, Compilation, ModuleGraph, ModuleIdentifier, RuntimeGlobals, RuntimeSpec,
+  RuntimeSpecMap, RuntimeSpecSet,
 };
 use crate::{ChunkGraph, Module};
 
 #[derive(Debug, Clone, Default)]
 pub struct ChunkGraphModule {
   pub id: Option<String>,
-  pub(crate) entry_in_chunks: UkeySet<ChunkUkey>,
+  pub(super) entry_in_chunks: UkeySet<ChunkUkey>,
   pub chunks: UkeySet<ChunkUkey>,
-  pub(crate) runtime_in_chunks: UkeySet<ChunkUkey>,
+  pub(super) runtime_in_chunks: UkeySet<ChunkUkey>,
 }
 
 impl ChunkGraphModule {
@@ -42,16 +42,36 @@ impl ChunkGraph {
       .or_default();
   }
 
+  pub fn remove_module(&mut self, module_identifier: ModuleIdentifier) {
+    let Some(cgm) = self
+      .chunk_graph_module_by_module_identifier
+      .remove(&module_identifier)
+    else {
+      // already removed
+      return;
+    };
+
+    for chunk in cgm.chunks {
+      let chunk_graph_chunk = self.expect_chunk_graph_chunk_mut(chunk);
+      chunk_graph_chunk.modules.remove(&module_identifier);
+      chunk_graph_chunk.entry_modules.remove(&module_identifier);
+    }
+
+    self
+      .block_to_chunk_group_ukey
+      .remove(&module_identifier.into());
+  }
+
   pub fn is_module_in_chunk(
     &self,
     module_identifier: &ModuleIdentifier,
     chunk_ukey: ChunkUkey,
   ) -> bool {
-    let chunk_graph_chunk = self.get_chunk_graph_chunk(&chunk_ukey);
+    let chunk_graph_chunk = self.expect_chunk_graph_chunk(&chunk_ukey);
     chunk_graph_chunk.modules.contains(module_identifier)
   }
 
-  pub(crate) fn get_chunk_graph_module_mut(
+  pub(crate) fn expect_chunk_graph_module_mut(
     &mut self,
     module_identifier: ModuleIdentifier,
   ) -> &mut ChunkGraphModule {
@@ -61,7 +81,7 @@ impl ChunkGraph {
       .unwrap_or_else(|| panic!("Module({}) should be added before using", module_identifier))
   }
 
-  pub(crate) fn get_chunk_graph_module(
+  pub(crate) fn expect_chunk_graph_module(
     &self,
     module_identifier: ModuleIdentifier,
   ) -> &ChunkGraphModule {
@@ -69,6 +89,15 @@ impl ChunkGraph {
       .chunk_graph_module_by_module_identifier
       .get(&module_identifier)
       .unwrap_or_else(|| panic!("Module({}) should be added before using", module_identifier))
+  }
+
+  pub(crate) fn get_chunk_graph_module_mut(
+    &mut self,
+    module_identifier: ModuleIdentifier,
+  ) -> Option<&mut ChunkGraphModule> {
+    self
+      .chunk_graph_module_by_module_identifier
+      .get_mut(&module_identifier)
   }
 
   pub fn get_module_chunks(&self, module_identifier: ModuleIdentifier) -> &UkeySet<ChunkUkey> {
@@ -80,7 +109,7 @@ impl ChunkGraph {
   }
 
   pub fn get_number_of_module_chunks(&self, module_identifier: ModuleIdentifier) -> usize {
-    let cgm = self.get_chunk_graph_module(module_identifier);
+    let cgm = self.expect_chunk_graph_module(module_identifier);
     cgm.chunks.len()
   }
 
@@ -109,22 +138,22 @@ impl ChunkGraph {
     module_identifier: ModuleIdentifier,
     chunk_by_ukey: &ChunkByUkey,
   ) -> RuntimeSpecSet {
-    let cgm = self.get_chunk_graph_module(module_identifier);
+    let cgm = self.expect_chunk_graph_module(module_identifier);
     let mut runtimes = RuntimeSpecSet::default();
     for chunk_ukey in cgm.chunks.iter() {
       let chunk = chunk_by_ukey.expect_get(chunk_ukey);
-      runtimes.set(chunk.runtime.clone());
+      runtimes.set(chunk.runtime().clone());
     }
     runtimes
   }
 
   pub fn get_module_id(&self, module_identifier: ModuleIdentifier) -> Option<&str> {
-    let cgm = self.get_chunk_graph_module(module_identifier);
+    let cgm = self.expect_chunk_graph_module(module_identifier);
     cgm.id.as_deref()
   }
 
   pub fn set_module_id(&mut self, module_identifier: ModuleIdentifier, id: String) {
-    let cgm = self.get_chunk_graph_module_mut(module_identifier);
+    let cgm = self.expect_chunk_graph_module_mut(module_identifier);
     cgm.id = Some(id);
   }
 
@@ -136,7 +165,7 @@ impl ChunkGraph {
     self
       .block_to_chunk_group_ukey
       .get(block)
-      .and_then(|ukey| get_chunk_group_from_ukey(ukey, chunk_group_by_ukey))
+      .and_then(|ukey| chunk_group_by_ukey.get(ukey))
   }
 
   pub fn connect_block_and_chunk_group(
@@ -178,7 +207,7 @@ impl ChunkGraph {
     self
       .get_module_graph_hash_without_connections(module, compilation, runtime)
       .hash(&mut hasher);
-    let strict = module.get_strict_harmony_module();
+    let strict = module.get_strict_esm_module();
     let mg = compilation.get_module_graph();
     let connections = mg
       .get_outgoing_connections(&module.identifier())
@@ -192,7 +221,7 @@ impl ChunkGraph {
         if visited_modules.contains(module_identifier) {
           continue;
         }
-        if connection.get_active_state(&mg, runtime).is_false() {
+        if connection.active_state(&mg, runtime).is_false() {
           continue;
         }
         visited_modules.insert(*module_identifier);
@@ -216,7 +245,7 @@ impl ChunkGraph {
     let mut hasher = FxHasher::default();
     let mg = compilation.get_module_graph();
     let module_identifier = module.identifier();
-    let cgm = self.get_chunk_graph_module(module_identifier);
+    let cgm = self.expect_chunk_graph_module(module_identifier);
     cgm.id.as_ref().dyn_hash(&mut hasher);
     module.source_types().dyn_hash(&mut hasher);
     ModuleGraph::is_async(compilation, &module_identifier).dyn_hash(&mut hasher);

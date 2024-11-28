@@ -1,10 +1,9 @@
 mod create_script_url_dependency;
 pub use create_script_url_dependency::CreateScriptUrlDependency;
 use rspack_core::{
-  get_chunk_from_ukey, AsContextDependency, Compilation, Dependency, DependencyCategory,
-  DependencyId, DependencyTemplate, DependencyType, ExtendedReferencedExport, ModuleDependency,
-  ModuleGraph, RealDependencyLocation, RuntimeGlobals, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource,
+  AsContextDependency, Compilation, Dependency, DependencyCategory, DependencyId, DependencyRange,
+  DependencyTemplate, DependencyType, ExtendedReferencedExport, ModuleDependency, ModuleGraph,
+  RuntimeGlobals, RuntimeSpec, TemplateContext, TemplateReplaceSource,
 };
 use rspack_util::ext::DynHash;
 
@@ -13,16 +12,16 @@ pub struct WorkerDependency {
   id: DependencyId,
   request: String,
   public_path: String,
-  range: RealDependencyLocation,
-  range_path: (u32, u32),
+  range: DependencyRange,
+  range_path: DependencyRange,
 }
 
 impl WorkerDependency {
   pub fn new(
     request: String,
     public_path: String,
-    range: RealDependencyLocation,
-    range_path: (u32, u32),
+    range: DependencyRange,
+    range_path: DependencyRange,
   ) -> Self {
     Self {
       id: DependencyId::new(),
@@ -47,7 +46,7 @@ impl Dependency for WorkerDependency {
     &DependencyType::NewWorker
   }
 
-  fn range(&self) -> Option<&RealDependencyLocation> {
+  fn range(&self) -> Option<&DependencyRange> {
     Some(&self.range)
   }
 
@@ -98,8 +97,8 @@ impl DependencyTemplate for WorkerDependency {
           .get_block_chunk_group(block, &compilation.chunk_group_by_ukey)
       })
       .map(|entrypoint| entrypoint.get_entry_point_chunk())
-      .and_then(|ukey| get_chunk_from_ukey(&ukey, &compilation.chunk_by_ukey))
-      .and_then(|chunk| chunk.id.as_deref())
+      .and_then(|ukey| compilation.chunk_by_ukey.get(&ukey))
+      .and_then(|chunk| chunk.id())
       .and_then(|chunk_id| serde_json::to_string(chunk_id).ok())
       .expect("failed to get json stringified chunk id");
     let worker_import_base_url = if !self.public_path.is_empty() {
@@ -113,8 +112,8 @@ impl DependencyTemplate for WorkerDependency {
     runtime_requirements.insert(RuntimeGlobals::GET_CHUNK_SCRIPT_FILENAME);
 
     source.replace(
-      self.range_path.0,
-      self.range_path.1,
+      self.range_path.start,
+      self.range_path.end,
       format!(
         "/* worker import */{} + {}({}), {}",
         worker_import_base_url,

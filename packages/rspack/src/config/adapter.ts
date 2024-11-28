@@ -13,8 +13,10 @@ import {
 	type RawCssModuleGeneratorOptions,
 	type RawCssModuleParserOptions,
 	type RawCssParserOptions,
+	type RawExperiments,
 	type RawFuncUseCtx,
 	type RawGeneratorOptions,
+	type RawIncremental,
 	type RawJavascriptParserOptions,
 	type RawModuleRule,
 	type RawModuleRuleUse,
@@ -55,7 +57,9 @@ import type {
 	CssAutoGeneratorOptions,
 	CssGeneratorOptions,
 	CssParserOptions,
+	ExperimentCacheOptions,
 	GeneratorOptionsByModuleType,
+	Incremental,
 	JavascriptParserOptions,
 	LibraryName,
 	LibraryOptions,
@@ -70,7 +74,7 @@ import type {
 	SnapshotOptions,
 	StatsValue,
 	Target
-} from "./zod";
+} from "./types";
 
 export type { LoaderContext, LoaderDefinition, LoaderDefinitionFunction };
 
@@ -119,6 +123,7 @@ export const getRawOptions = (
 		node: getRawNode(options.node),
 		// SAFETY: applied default value in `applyRspackOptionsDefaults`.
 		profile: options.profile!,
+		amd: options.amd,
 		// SAFETY: applied default value in `applyRspackOptionsDefaults`.
 		bail: options.bail!,
 		__references: {}
@@ -255,7 +260,8 @@ function getRawOutput(output: OutputNormalized): RawOptions["output"] {
 		scriptType: output.scriptType === false ? "false" : output.scriptType!,
 		charset: output.charset!,
 		chunkLoadTimeout: output.chunkLoadTimeout!,
-		environment: output.environment!
+		environment: output.environment!,
+		compareBeforeEmit: output.compareBeforeEmit!
 	};
 }
 
@@ -457,24 +463,28 @@ const getRawModuleRule = (
 			: undefined,
 		resolve: rule.resolve ? getRawResolve(rule.resolve) : undefined,
 		oneOf: rule.oneOf
-			? rule.oneOf.map((rule, index) =>
-					getRawModuleRule(
-						rule,
-						`${path}.oneOf[${index}]`,
-						options,
-						rule.type ?? upperType
+			? rule.oneOf
+					.filter(Boolean)
+					.map((rule, index) =>
+						getRawModuleRule(
+							rule as RuleSetRule,
+							`${path}.oneOf[${index}]`,
+							options,
+							(rule as RuleSetRule).type ?? upperType
+						)
 					)
-				)
 			: undefined,
 		rules: rule.rules
-			? rule.rules.map((rule, index) =>
-					getRawModuleRule(
-						rule,
-						`${path}.rules[${index}]`,
-						options,
-						rule.type ?? upperType
+			? rule.rules
+					.filter(Boolean)
+					.map((rule, index) =>
+						getRawModuleRule(
+							rule as RuleSetRule,
+							`${path}.rules[${index}]`,
+							options,
+							(rule as RuleSetRule).type ?? upperType
+						)
 					)
-				)
 			: undefined,
 		enforce: rule.enforce
 	};
@@ -534,10 +544,7 @@ function getRawRuleSetCondition(
 	if (condition instanceof RegExp) {
 		return {
 			type: RawRuleSetConditionType.regexp,
-			regexp: {
-				source: condition.source,
-				flags: condition.flags
-			}
+			regexp: condition
 		};
 	}
 	if (typeof condition === "function") {
@@ -655,19 +662,15 @@ function getRawJavascriptParserOptions(
 	parser: JavascriptParserOptions
 ): RawJavascriptParserOptions {
 	return {
-		dynamicImportMode: parser.dynamicImportMode ?? "lazy",
-		dynamicImportPreload: parser.dynamicImportPreload?.toString() ?? "false",
-		dynamicImportPrefetch: parser.dynamicImportPrefetch?.toString() ?? "false",
-		dynamicImportFetchPriority: parser.dynamicImportFetchPriority?.toString(),
-		importMeta: parser.importMeta ?? true,
-		url:
-			parser.url === false
-				? "false"
-				: parser.url === "relative"
-					? parser.url
-					: "true",
-		exprContextCritical: parser.exprContextCritical ?? true,
-		wrappedContextCritical: parser.wrappedContextCritical ?? false,
+		dynamicImportMode: parser.dynamicImportMode,
+		dynamicImportPreload: parser.dynamicImportPreload?.toString(),
+		dynamicImportPrefetch: parser.dynamicImportPrefetch?.toString(),
+		dynamicImportFetchPriority: parser.dynamicImportFetchPriority,
+		importMeta: parser.importMeta,
+		url: parser.url?.toString(),
+		exprContextCritical: parser.exprContextCritical,
+		wrappedContextCritical: parser.wrappedContextCritical,
+		wrappedContextRegExp: parser.wrappedContextRegExp,
 		exportsPresence:
 			parser.exportsPresence === false ? "false" : parser.exportsPresence,
 		importExportsPresence:
@@ -678,14 +681,18 @@ function getRawJavascriptParserOptions(
 			parser.reexportExportsPresence === false
 				? "false"
 				: parser.reexportExportsPresence,
-		strictExportPresence: parser.strictExportPresence ?? false,
+		strictExportPresence: parser.strictExportPresence,
 		worker:
 			typeof parser.worker === "boolean"
 				? parser.worker
 					? ["..."]
 					: []
-				: parser.worker ?? ["..."],
-		overrideStrict: parser.overrideStrict
+				: parser.worker,
+		overrideStrict: parser.overrideStrict,
+		requireAsExpression: parser.requireAsExpression,
+		requireDynamic: parser.requireDynamic,
+		requireResolve: parser.requireResolve,
+		importDynamic: parser.importDynamic
 	};
 }
 
@@ -879,22 +886,72 @@ function getRawSnapshotOptions(
 function getRawExperiments(
 	experiments: ExperimentsNormalized
 ): RawOptions["experiments"] {
-	const { topLevelAwait, layers, rspackFuture } = experiments;
-	assert(!isNil(topLevelAwait) && !isNil(rspackFuture) && !isNil(layers));
+	const { topLevelAwait, layers, incremental, rspackFuture, cache } =
+		experiments;
+	assert(
+		!isNil(topLevelAwait) &&
+			!isNil(rspackFuture) &&
+			!isNil(layers) &&
+			!isNil(incremental)
+	);
 
 	return {
 		layers,
 		topLevelAwait,
+		cache: getRawExperimentCache(cache),
+		incremental: getRawIncremental(incremental),
 		rspackFuture: getRawRspackFutureOptions(rspackFuture)
+	};
+}
+
+function getRawExperimentCache(
+	cache?: ExperimentCacheOptions
+): RawExperiments["cache"] {
+	if (cache === undefined) {
+		throw new Error("experiment cache can not be undefined");
+	}
+	if (typeof cache === "boolean") {
+		return {
+			type: cache ? "memory" : "disable"
+		};
+	}
+	if (cache.type === "persistent") {
+		const { type, snapshot, storage } = cache;
+		return {
+			type,
+			snapshot,
+			storage: [storage]
+		};
+	}
+	return cache;
+}
+
+function getRawIncremental(
+	incremental: false | Incremental
+): RawIncremental | undefined {
+	if (incremental === false) {
+		return undefined;
+	}
+	return {
+		make: incremental.make!,
+		inferAsyncModules: incremental.inferAsyncModules!,
+		providedExports: incremental.providedExports!,
+		dependenciesDiagnostics: incremental.dependenciesDiagnostics!,
+		buildChunkGraph: incremental.buildChunkGraph!,
+		modulesHashes: incremental.modulesHashes!,
+		modulesCodegen: incremental.modulesCodegen!,
+		modulesRuntimeRequirements: incremental.modulesRuntimeRequirements!,
+		chunksRuntimeRequirements: incremental.chunksRuntimeRequirements!,
+		chunksHashes: incremental.chunksHashes!,
+		chunksRender: incremental.chunksRender!,
+		emitAssets: incremental.emitAssets!
 	};
 }
 
 function getRawRspackFutureOptions(
 	future: RspackFutureOptions
 ): RawRspackFuture {
-	return {
-		newIncremental: future.newIncremental!
-	};
+	return {};
 }
 
 function getRawNode(node: Node): RawOptions["node"] {
