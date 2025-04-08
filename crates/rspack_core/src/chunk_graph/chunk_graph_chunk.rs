@@ -1,17 +1,20 @@
 //!  There are methods whose verb is `ChunkGraphChunk`
 
+use std::{borrow::Borrow, fmt, sync::Arc};
+
 use hashlink::LinkedHashMap;
 use indexmap::IndexSet;
 use itertools::Itertools;
+use rspack_cacheable::cacheable;
 use rspack_collections::{DatabaseItem, IdentifierLinkedMap, IdentifierMap, IdentifierSet};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
+use serde::{Serialize, Serializer};
 
 use crate::{
-  find_graph_roots, merge_runtime, BoxModule, Chunk, ChunkByUkey, ChunkGraphModule,
-  ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Module, ModuleGraph, ModuleIdentifier,
-  RuntimeGlobals, RuntimeModule, SourceType,
+  find_graph_roots, merge_runtime, BoxModule, Chunk, ChunkByUkey, ChunkGraph, ChunkGraphModule,
+  ChunkGroupByUkey, ChunkGroupUkey, ChunkIdsArtifact, ChunkUkey, Compilation, Module, ModuleGraph,
+  ModuleIdentifier, RuntimeGlobals, RuntimeModule, SourceType,
 };
-use crate::{ChunkGraph, Compilation};
 
 #[derive(Debug, Clone, Default)]
 pub struct ChunkSizeOptions {
@@ -19,6 +22,51 @@ pub struct ChunkSizeOptions {
   pub chunk_overhead: Option<f64>,
   // multiplicator for initial chunks
   pub entry_chunk_multiplicator: Option<f64>,
+}
+
+#[cacheable]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChunkId {
+  inner: Arc<str>,
+}
+
+impl From<String> for ChunkId {
+  fn from(s: String) -> Self {
+    Self { inner: s.into() }
+  }
+}
+
+impl From<&str> for ChunkId {
+  fn from(s: &str) -> Self {
+    Self { inner: s.into() }
+  }
+}
+
+impl fmt::Display for ChunkId {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
+impl Serialize for ChunkId {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(self.as_str())
+  }
+}
+
+impl Borrow<str> for ChunkId {
+  fn borrow(&self) -> &str {
+    self.as_str()
+  }
+}
+
+impl ChunkId {
+  pub fn as_str(&self) -> &str {
+    &self.inner
+  }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -45,6 +93,10 @@ impl ChunkGraphChunk {
 
   pub fn modules(&self) -> &IdentifierSet {
     &self.modules
+  }
+
+  pub fn modules_mut(&mut self) -> &mut IdentifierSet {
+    &mut self.modules
   }
 }
 
@@ -446,7 +498,7 @@ impl ChunkGraph {
       let runtime_module = runtime_modules
         .get(runtime_module)
         .expect("should have runtime_module");
-      if !runtime_module.full_hash() {
+      if runtime_module.full_hash() {
         return true;
       }
     }
@@ -459,7 +511,7 @@ impl ChunkGraph {
     runtime_requirements: RuntimeGlobals,
   ) {
     compilation
-      .cgc_runtime_requirements_results
+      .cgc_runtime_requirements_artifact
       .insert(chunk_ukey, runtime_requirements);
   }
 
@@ -476,7 +528,7 @@ impl ChunkGraph {
     chunk_ukey: &ChunkUkey,
   ) -> &'a RuntimeGlobals {
     compilation
-      .cgc_runtime_requirements_results
+      .cgc_runtime_requirements_artifact
       .get(chunk_ukey)
       .unwrap_or_else(|| {
         let c = compilation.chunk_graph.expect_chunk_graph_chunk(chunk_ukey);
@@ -484,7 +536,7 @@ impl ChunkGraph {
           "Chunk({:?} {:?}) should have runtime requirements, {:?}",
           c,
           chunk_ukey,
-          &compilation.cgc_runtime_requirements_results.keys()
+          &compilation.cgc_runtime_requirements_artifact.keys()
         )
       })
   }
@@ -550,7 +602,10 @@ impl ChunkGraph {
       .iter()
     {
       let chunk = compilation.chunk_by_ukey.expect_get(c);
-      map.insert(chunk.expect_id().to_string(), filter(c, compilation));
+      map.insert(
+        chunk.expect_id(&compilation.chunk_ids_artifact).to_string(),
+        filter(c, compilation),
+      );
     }
 
     map
@@ -639,7 +694,7 @@ impl ChunkGraph {
     for chunk_group_ukey in chunk.get_sorted_groups_iter(chunk_group_by_ukey) {
       let chunk_group = chunk_group_by_ukey.expect_get(chunk_group_ukey);
       if chunk_group.kind.is_entrypoint() {
-        let entry_point_chunk = chunk_group.get_entry_point_chunk();
+        let entry_point_chunk = chunk_group.get_entrypoint_chunk();
         let cgc = self.expect_chunk_graph_chunk(&entry_point_chunk);
         for (_, chunk_group_ukey) in cgc.entry_modules.iter() {
           let chunk_group = chunk_group_by_ukey.expect_get(chunk_group_ukey);
@@ -911,5 +966,24 @@ impl ChunkGraph {
         None
       })
       .unwrap_or(module.source_types().iter().copied().collect())
+  }
+
+  pub fn get_chunk_id<'a>(
+    chunk_ids: &'a ChunkIdsArtifact,
+    chunk_ukey: &ChunkUkey,
+  ) -> Option<&'a ChunkId> {
+    chunk_ids.get(chunk_ukey)
+  }
+
+  pub fn set_chunk_id(
+    chunk_ids: &mut ChunkIdsArtifact,
+    chunk_ukey: ChunkUkey,
+    id: ChunkId,
+  ) -> bool {
+    if let Some(old_id) = chunk_ids.insert(chunk_ukey, id.clone()) {
+      old_id != id
+    } else {
+      true
+    }
   }
 }

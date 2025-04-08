@@ -1,7 +1,11 @@
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsOption, AsPreset, AsVec},
+};
 use rspack_core::{
-  module_namespace_promise, AsContextDependency, Compilation, Dependency, DependencyCategory,
-  DependencyId, DependencyRange, DependencyTemplate, DependencyType, ImportAttributes,
-  ModuleDependency, RuntimeSpec, TemplateContext, TemplateReplaceSource,
+  module_namespace_promise, AsContextDependency, Dependency, DependencyCategory, DependencyId,
+  DependencyRange, DependencyTemplate, DependencyType, FactorizeInfo, ImportAttributes,
+  ModuleDependency, TemplateContext, TemplateReplaceSource,
 };
 use swc_core::ecma::atoms::Atom;
 
@@ -10,14 +14,18 @@ use super::{
   import_dependency::create_import_dependency_referenced_exports,
 };
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ImportEagerDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
   range: DependencyRange,
+  #[cacheable(with=AsOption<AsVec<AsPreset>>)]
   referenced_exports: Option<Vec<Atom>>,
   attributes: Option<ImportAttributes>,
   resource_identifier: String,
+  factorize_info: FactorizeInfo,
 }
 
 impl ImportEagerDependency {
@@ -36,10 +44,12 @@ impl ImportEagerDependency {
       referenced_exports,
       attributes,
       resource_identifier,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ImportEagerDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -78,6 +88,7 @@ impl Dependency for ImportEagerDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ImportEagerDependency {
   fn request(&self) -> &str {
     &self.request
@@ -90,8 +101,17 @@ impl ModuleDependency for ImportEagerDependency {
   fn set_request(&mut self, request: String) {
     self.request = request.into();
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ImportEagerDependency {
   fn apply(
     &self,
@@ -114,18 +134,6 @@ impl DependencyTemplate for ImportEagerDependency {
       .as_str(),
       None,
     );
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

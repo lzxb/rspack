@@ -1,11 +1,10 @@
-use std::hash::Hash;
-use std::sync::LazyLock;
+use std::{hash::Hash, sync::LazyLock};
 
 use async_trait::async_trait;
 use rspack_collections::DatabaseItem;
 use rspack_core::{
   get_css_chunk_filename_template, get_js_chunk_filename_template, has_hash_placeholder,
-  ApplyContext, ChunkLoading, ChunkUkey, Compilation, CompilationParams,
+  ApplyContext, ChunkLoading, ChunkUkey, Compilation, CompilationId, CompilationParams,
   CompilationRuntimeRequirementInModule, CompilationRuntimeRequirementInTree, CompilerCompilation,
   CompilerOptions, ModuleIdentifier, Plugin, PluginContext, PublicPath, RuntimeGlobals,
   RuntimeModuleExt, SourceType,
@@ -14,20 +13,27 @@ use rspack_error::Result;
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_plugin_javascript::{JavascriptModulesChunkHash, JsPlugin};
+use rspack_util::fx_hash::FxDashMap;
 
-use crate::runtime_module::{
-  chunk_has_css, chunk_has_js, is_enabled_for_chunk, AmdDefineRuntimeModule,
-  AmdOptionsRuntimeModule, AsyncRuntimeModule, AutoPublicPathRuntimeModule, BaseUriRuntimeModule,
-  ChunkNameRuntimeModule, ChunkPrefetchPreloadFunctionRuntimeModule,
-  CompatGetDefaultExportRuntimeModule, CreateFakeNamespaceObjectRuntimeModule,
-  CreateScriptRuntimeModule, CreateScriptUrlRuntimeModule, DefinePropertyGettersRuntimeModule,
-  ESMModuleDecoratorRuntimeModule, EnsureChunkRuntimeModule, GetChunkFilenameRuntimeModule,
-  GetChunkUpdateFilenameRuntimeModule, GetFullHashRuntimeModule, GetMainFilenameRuntimeModule,
-  GetTrustedTypesPolicyRuntimeModule, GlobalRuntimeModule, HasOwnPropertyRuntimeModule,
-  LoadScriptRuntimeModule, MakeNamespaceObjectRuntimeModule, NodeModuleDecoratorRuntimeModule,
-  NonceRuntimeModule, OnChunkLoadedRuntimeModule, PublicPathRuntimeModule,
-  RelativeUrlRuntimeModule, RuntimeIdRuntimeModule, SystemContextRuntimeModule,
+use crate::{
+  runtime_module::{
+    chunk_has_css, chunk_has_js, is_enabled_for_chunk, AmdDefineRuntimeModule,
+    AmdOptionsRuntimeModule, AsyncRuntimeModule, AutoPublicPathRuntimeModule, BaseUriRuntimeModule,
+    ChunkNameRuntimeModule, ChunkPrefetchPreloadFunctionRuntimeModule,
+    CompatGetDefaultExportRuntimeModule, CreateFakeNamespaceObjectRuntimeModule,
+    CreateScriptRuntimeModule, CreateScriptUrlRuntimeModule, DefinePropertyGettersRuntimeModule,
+    ESMModuleDecoratorRuntimeModule, EnsureChunkRuntimeModule, GetChunkFilenameRuntimeModule,
+    GetChunkUpdateFilenameRuntimeModule, GetFullHashRuntimeModule, GetMainFilenameRuntimeModule,
+    GetTrustedTypesPolicyRuntimeModule, GlobalRuntimeModule, HasOwnPropertyRuntimeModule,
+    LoadScriptRuntimeModule, MakeNamespaceObjectRuntimeModule, NodeModuleDecoratorRuntimeModule,
+    NonceRuntimeModule, OnChunkLoadedRuntimeModule, PublicPathRuntimeModule,
+    RelativeUrlRuntimeModule, RuntimeIdRuntimeModule, SystemContextRuntimeModule,
+  },
+  RuntimePluginHooks,
 };
+
+static COMPILATION_HOOKS_MAP: LazyLock<FxDashMap<CompilationId, Box<RuntimePluginHooks>>> =
+  LazyLock::new(Default::default);
 
 static GLOBALS_ON_REQUIRE: LazyLock<Vec<RuntimeGlobals>> = LazyLock::new(|| {
   vec![
@@ -151,13 +157,32 @@ fn handle_dependency_globals(
 #[derive(Debug, Default)]
 pub struct RuntimePlugin;
 
+impl RuntimePlugin {
+  pub fn get_compilation_hooks(
+    id: CompilationId,
+  ) -> dashmap::mapref::one::Ref<'static, CompilationId, Box<RuntimePluginHooks>> {
+    if !COMPILATION_HOOKS_MAP.contains_key(&id) {
+      COMPILATION_HOOKS_MAP.insert(id, Default::default());
+    }
+    COMPILATION_HOOKS_MAP
+      .get(&id)
+      .expect("should have js plugin drive")
+  }
+
+  pub fn get_compilation_hooks_mut(
+    id: CompilationId,
+  ) -> dashmap::mapref::one::RefMut<'static, CompilationId, Box<RuntimePluginHooks>> {
+    COMPILATION_HOOKS_MAP.entry(id).or_default()
+  }
+}
+
 #[plugin_hook(CompilerCompilation for RuntimePlugin)]
 async fn compilation(
   &self,
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   Ok(())
 }
@@ -181,7 +206,7 @@ async fn js_chunk_hash(
 }
 
 #[plugin_hook(CompilationRuntimeRequirementInModule for RuntimePlugin)]
-fn runtime_requirements_in_module(
+async fn runtime_requirements_in_module(
   &self,
   _compilation: &Compilation,
   _module: &ModuleIdentifier,
@@ -200,7 +225,7 @@ fn runtime_requirements_in_module(
 }
 
 #[plugin_hook(CompilationRuntimeRequirementInTree for RuntimePlugin)]
-fn runtime_requirements_in_tree(
+async fn runtime_requirements_in_tree(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,
@@ -378,12 +403,7 @@ fn runtime_requirements_in_tree(
           GetMainFilenameRuntimeModule::new(
             "update manifest",
             RuntimeGlobals::GET_UPDATE_MANIFEST_FILENAME,
-            compilation
-              .options
-              .output
-              .hot_update_main_filename
-              .clone()
-              .into(),
+            compilation.options.output.hot_update_main_filename.clone(),
           )
           .boxed(),
         )?;

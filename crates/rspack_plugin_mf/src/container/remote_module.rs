@@ -1,15 +1,18 @@
 use std::borrow::Cow;
 
 use async_trait::async_trait;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   impl_module_meta_info, impl_source_map_config, module_update_hash,
-  rspack_sources::{RawSource, Source, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   AsyncDependenciesBlockIdentifier, BoxDependency, BuildContext, BuildInfo, BuildMeta, BuildResult,
-  CodeGenerationResult, Compilation, ConcatenationScope, Context, DependenciesBlock, DependencyId,
-  FactoryMeta, LibIdentOptions, Module, ModuleIdentifier, ModuleType, RuntimeSpec, SourceType,
+  ChunkGraph, CodeGenerationResult, Compilation, ConcatenationScope, Context, DependenciesBlock,
+  DependencyId, FactoryMeta, LibIdentOptions, Module, ModuleIdentifier, ModuleType, RuntimeSpec,
+  SourceType,
 };
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::source_map::SourceMapKind;
 
 use super::{
@@ -21,6 +24,7 @@ use crate::{
 };
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug)]
 pub struct RemoteModule {
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
@@ -34,8 +38,8 @@ pub struct RemoteModule {
   pub share_scope: String,
   pub remote_key: String,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
 }
 
 impl RemoteModule {
@@ -65,8 +69,11 @@ impl RemoteModule {
       share_scope,
       remote_key,
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: BuildInfo {
+        strict: true,
+        ..Default::default()
+      },
+      build_meta: Default::default(),
       source_map_kind: SourceMapKind::empty(),
     }
   }
@@ -100,6 +107,7 @@ impl DependenciesBlock for RemoteModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait]
 impl Module for RemoteModule {
   impl_module_meta_info!();
@@ -112,15 +120,11 @@ impl Module for RemoteModule {
     &ModuleType::Remote
   }
 
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-
   fn source_types(&self) -> &[SourceType] {
     &[SourceType::Remote, SourceType::ShareInit]
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -141,11 +145,6 @@ impl Module for RemoteModule {
     _build_context: BuildContext,
     _: Option<&Compilation>,
   ) -> Result<BuildResult> {
-    let build_info = BuildInfo {
-      strict: true,
-      ..Default::default()
-    };
-
     let mut dependencies: Vec<BoxDependency> = Vec::new();
     if self.external_requests.len() == 1 {
       let dep = RemoteToExternalDependency::new(self.external_requests[0].clone());
@@ -156,16 +155,14 @@ impl Module for RemoteModule {
     }
 
     Ok(BuildResult {
-      build_info,
-      build_meta: Default::default(),
       dependencies,
       blocks: Vec::new(),
       optimization_bailouts: vec![],
     })
   }
 
-  #[tracing::instrument(name = "RemoteModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("RemoteModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -174,26 +171,27 @@ impl Module for RemoteModule {
     let mut codegen = CodeGenerationResult::default();
     let module_graph = compilation.get_module_graph();
     let module = module_graph.get_module_by_dependency_id(&self.dependencies[0]);
-    let id = module.and_then(|m| compilation.chunk_graph.get_module_id(m.identifier()));
-    codegen.add(SourceType::Remote, RawSource::from("").boxed());
+    let id = module
+      .and_then(|m| ChunkGraph::get_module_id(&compilation.module_ids_artifact, m.identifier()));
+    codegen.add(SourceType::Remote, RawStringSource::from_static("").boxed());
     codegen.data.insert(CodeGenerationDataShareInit {
       items: vec![ShareInitData {
         share_scope: self.share_scope.clone(),
         init_stage: 20,
-        init: DataInitInfo::ExternalModuleId(id.map(|i| i.to_owned())),
+        init: DataInitInfo::ExternalModuleId(id.cloned()),
       }],
     });
     Ok(codegen)
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    module_update_hash(self, hasher, compilation, runtime);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

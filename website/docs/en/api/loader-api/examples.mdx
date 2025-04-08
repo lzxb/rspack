@@ -6,7 +6,7 @@ import WebpackLicense from '@components/WebpackLicense';
 
 The following sections provide some basic examples of the different types of loaders. Note that the `map` and `meta` parameters are optional, see [`this.callback`](#thiscallbackerr-error--null-content-string--buffer-sourcemap-sourcemap-meta-any) below.
 
-## Sync Loaders
+## Sync loaders
 
 Either `return` or `this.callback` can be used to return the transformed `content` synchronously:
 
@@ -29,7 +29,7 @@ module.exports = function (content, map, meta) {
 Rspack, internally, will convert loaders into async regardless of it's a synchronous loader for technical and performance reason.
 :::
 
-## Async Loaders
+## Async loaders
 
 For async loaders, `this.async` is used to retrieve the `callback` function:
 
@@ -53,7 +53,7 @@ module.exports = function (content, map, meta) {
 };
 ```
 
-## ESM Loader
+## ESM loader
 
 Rspack supports ESM loaders, you can write loaders using ESM syntax and export the loader function using `export default`.
 
@@ -85,6 +85,28 @@ export function pitch(remainingRequest, precedingRequest, data) {
 ESM loader and CommonJS loader have the same functionality, but use different module syntax. You can choose the format based on your project needs.
 :::
 
+### Write with TypeScript
+
+If you write Rspack loader using TypeScript, you can import `LoaderContext` to add types to the loader:
+
+```ts title="my-loader.ts"
+import type { LoaderContext } from '@rspack/core';
+
+// Declare the type of loader options
+type MyLoaderOptions = {
+  foo: string;
+};
+
+export default function myLoader(
+  this: LoaderContext<MyLoaderOptions>,
+  source: string,
+) {
+  const options = this.getOptions();
+  console.log(options); // { foo: 'bar' }
+  return source;
+}
+```
+
 ## 'Raw' Loader
 
 By default, resource files are converted to UTF-8 strings and passed to the loader. loaders can receive raw `Buffer` by setting `raw` to `true`. Each loader can pass its processing results as `String` or `Buffer`, and the Rspack compiler will convert them to and from the loader.
@@ -103,8 +125,8 @@ Loaders are **always** called from right to left. There are some instances where
 
 For the following configuration of `use`:
 
-```js title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   //...
   module: {
     rules: [

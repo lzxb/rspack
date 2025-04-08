@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use config::Config;
-use derivative::Derivative;
+use derive_more::Debug;
 pub use lightningcss;
 use lightningcss::{
   printer::{PrinterOptions, PseudoClasses},
@@ -9,25 +9,30 @@ use lightningcss::{
   targets::{Features, Targets},
   traits::IntoOwned,
 };
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
 use rspack_core::{
   rspack_sources::{encode_mappings, Mapping, OriginalLocation, SourceMap},
   Loader, LoaderContext, RunnerContext,
 };
-use rspack_error::Result;
+use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rspack_loader_runner::{Identifiable, Identifier};
 use tokio::sync::Mutex;
 
 pub mod config;
+mod plugin;
+
+pub use plugin::LightningcssLoaderPlugin;
 
 pub const LIGHTNINGCSS_LOADER_IDENTIFIER: &str = "builtin:lightningcss-loader";
 
 pub type LightningcssLoaderVisitor = Box<dyn Send + Fn(&mut StyleSheet<'static, 'static>)>;
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[cacheable]
+#[derive(Debug)]
 pub struct LightningCssLoader {
   id: Identifier,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
+  #[cacheable(with=Skip)]
   visitors: Option<Mutex<Vec<LightningcssLoaderVisitor>>>,
   config: Config,
 }
@@ -79,8 +84,7 @@ impl LightningCssLoader {
       warnings: None,
       flags: parser_flags,
     };
-    let stylesheet = StyleSheet::parse(&content_str, option.clone())
-      .map_err(|e| rspack_error::error!(e.to_string()))?;
+    let stylesheet = StyleSheet::parse(&content_str, option.clone()).to_rspack_result()?;
 
     let mut stylesheet = to_static(
       stylesheet,
@@ -129,7 +133,7 @@ impl LightningCssLoader {
         targets,
         unused_symbols,
       })
-      .map_err(|e| rspack_error::error!(e))?;
+      .to_rspack_result()?;
 
     let enable_sourcemap = loader_context.context.module_source_map_kind.enabled();
 
@@ -142,8 +146,7 @@ impl LightningCssLoader {
             .unwrap_or(&loader_context.context.options.context),
         );
         sm.add_source(&filename);
-        sm.set_source_content(0, &content_str)
-          .map_err(|e| rspack_error::error!(e))?;
+        sm.set_source_content(0, &content_str).to_rspack_result()?;
         Ok(sm)
       })
       .transpose()?
@@ -180,7 +183,7 @@ impl LightningCssLoader {
             focus_within: pseudo_classes.focus_within.as_deref(),
           }),
       })
-      .map_err(|_| rspack_error::error!("failed to generate css"))?;
+      .to_rspack_result_with_message(|e| format!("failed to generate css: {e}"))?;
 
     if enable_sourcemap {
       let mappings = encode_mappings(source_map.get_mappings().iter().map(|mapping| Mapping {
@@ -194,22 +197,21 @@ impl LightningCssLoader {
         }),
       }));
       let rspack_source_map = SourceMap::new(
-        None,
         mappings,
         source_map
           .get_sources()
           .iter()
-          .map(|source| source.to_string().into())
+          .map(ToString::to_string)
           .collect::<Vec<_>>(),
         source_map
           .get_sources_content()
           .iter()
-          .map(|source| source.to_string().into())
+          .map(ToString::to_string)
           .collect::<Vec<_>>(),
         source_map
           .get_names()
           .iter()
-          .map(|source| source.to_string().into())
+          .map(ToString::to_string)
           .collect::<Vec<_>>(),
       );
       loader_context.finish_with((content.code, rspack_source_map));
@@ -227,6 +229,7 @@ impl Identifiable for LightningCssLoader {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait::async_trait]
 impl Loader<RunnerContext> for LightningCssLoader {
   async fn run(&self, loader_context: &mut LoaderContext<RunnerContext>) -> Result<()> {

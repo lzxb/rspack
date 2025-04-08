@@ -22,8 +22,10 @@ use swc_core::{
   },
 };
 
-use crate::legacy_case::{identifier_to_legacy_kebab_case, identifier_to_legacy_snake_case};
-use crate::visit::IdentComponent;
+use crate::{
+  legacy_case::{identifier_to_legacy_kebab_case, identifier_to_legacy_snake_case},
+  visit::IdentComponent,
+};
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -264,7 +266,7 @@ pub fn plugin_import(
           .param(0)
           .and_then(|v| v.value().as_str())
           .unwrap_or("");
-        out.write(param.cow_to_uppercase().as_ref())?;
+        out.write(param.cow_to_ascii_uppercase().as_ref())?;
         Ok(())
       },
     ),
@@ -283,7 +285,7 @@ pub fn plugin_import(
           .param(0)
           .and_then(|v| v.value().as_str())
           .unwrap_or("");
-        out.write(param.cow_to_lowercase().as_ref())?;
+        out.write(param.cow_to_ascii_lowercase().as_ref())?;
         Ok(())
       },
     ),
@@ -329,7 +331,7 @@ pub struct ImportPlugin<'a> {
   pub renderer: handlebars::Handlebars<'a>,
 }
 
-impl<'a> ImportPlugin<'a> {
+impl ImportPlugin<'_> {
   // return (import_es, import_css)
   fn transform(&self, name: String, config: &ImportOptions) -> (Option<String>, Option<String>) {
     let should_ignore = &config
@@ -444,7 +446,7 @@ impl<'a> ImportPlugin<'a> {
   }
 }
 
-impl<'a> VisitMut for ImportPlugin<'a> {
+impl VisitMut for ImportPlugin<'_> {
   fn visit_mut_module(&mut self, module: &mut Module) {
     // use visitor to collect all ident reference, and then remove imported component and type that is never referenced
     let mut visitor = IdentComponent {

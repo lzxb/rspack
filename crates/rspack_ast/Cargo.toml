@@ -4,7 +4,7 @@ edition     = "2021"
 license     = "MIT"
 name        = "rspack_ast"
 repository  = "https://github.com/web-infra-dev/rspack"
-version     = "0.1.0"
+version     = "0.2.0"
 [dependencies]
 anyhow = { workspace = true }
 swc_core = { workspace = true, features = [
@@ -24,3 +24,6 @@ swc_core = { workspace = true, features = [
 ] }
 swc_error_reporters = { workspace = true }
 swc_node_comments = { workspace = true }
+swc_parallel = { workspace = true, default-features = false }
+[package.metadata.cargo-shear]
+ignored = ["swc_parallel"]

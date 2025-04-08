@@ -3,46 +3,58 @@ mod entry;
 mod execute;
 mod overwrite;
 
-use dashmap::DashMap;
-use dashmap::{mapref::entry::Entry, DashSet};
-pub use execute::ExecuteModuleId;
-pub use execute::ExecutedRuntimeModule;
+use std::sync::Arc;
+
+use dashmap::{mapref::entry::Entry, DashMap};
+pub use execute::{ExecuteModuleId, ExecutedRuntimeModule};
 use rspack_collections::{Identifier, IdentifierDashMap, IdentifierDashSet};
-use tokio::sync::{
-  mpsc::{unbounded_channel, UnboundedSender},
-  oneshot,
+use rspack_error::Result;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use tokio::{
+  sync::{
+    mpsc::{unbounded_channel, UnboundedSender},
+    oneshot,
+  },
+  task,
 };
-use tokio::task;
 
 use self::{
   ctrl::{CtrlTask, Event, ExecuteParam},
   execute::{ExecuteModuleResult, ExecuteTask},
   overwrite::OverwriteTask,
 };
-use super::make::{repair::MakeTaskContext, update_module_graph, MakeArtifact, MakeParam};
-use crate::cache::new_cache;
-use crate::incremental::Mutation;
-use crate::{
-  task_loop::run_task_loop_with_event, Compilation, CompilationAsset, Context, Dependency,
-  DependencyId, LoaderImportDependency, PublicPath,
+use super::make::{
+  cutout::Cutout,
+  repair::{repair, MakeTaskContext},
+  MakeArtifact, MakeParam,
 };
+use crate::{
+  cache::MemoryCache, task_loop::run_task_loop_with_event, Compilation, CompilationAsset, Context,
+  Dependency, DependencyId, LoaderImportDependency, PublicPath,
+};
+
+#[derive(Debug)]
+struct DepStatus {
+  id: DependencyId,
+  should_update: bool,
+}
 
 #[derive(Debug, Default)]
 pub struct ModuleExecutor {
-  request_dep_map: DashMap<(String, Option<String>), DependencyId>,
+  cutout: Cutout,
+  request_dep_map: DashMap<(String, Option<String>), DepStatus>,
   pub make_artifact: MakeArtifact,
 
   event_sender: Option<UnboundedSender<Event>>,
   stop_receiver: Option<oneshot::Receiver<MakeArtifact>>,
-  assets: DashMap<String, CompilationAsset>,
-  module_assets: IdentifierDashMap<DashSet<String>>,
+  module_assets: IdentifierDashMap<HashMap<String, CompilationAsset>>,
   code_generated_modules: IdentifierDashSet,
   module_code_generated_modules: IdentifierDashMap<IdentifierDashSet>,
   pub executed_runtime_modules: IdentifierDashMap<ExecutedRuntimeModule>,
 }
 
 impl ModuleExecutor {
-  pub async fn hook_before_make(&mut self, compilation: &Compilation) {
+  pub async fn hook_before_make(&mut self, compilation: &Compilation) -> Result<()> {
     let mut make_artifact = std::mem::take(&mut self.make_artifact);
     let mut params = Vec::with_capacity(5);
     params.push(MakeParam::CheckNeedBuild);
@@ -52,31 +64,35 @@ impl ModuleExecutor {
     if !compilation.removed_files.is_empty() {
       params.push(MakeParam::RemovedFiles(compilation.removed_files.clone()));
     }
-    if !make_artifact.make_failed_dependencies.is_empty() {
-      let deps = std::mem::take(&mut make_artifact.make_failed_dependencies);
-      params.push(MakeParam::ForceBuildDeps(deps));
-    }
-    if !make_artifact.make_failed_module.is_empty() {
-      let modules = std::mem::take(&mut make_artifact.make_failed_module);
-      params.push(MakeParam::ForceBuildModules(modules));
-    }
     make_artifact.built_modules = Default::default();
     make_artifact.revoked_modules = Default::default();
-    make_artifact.diagnostics = Default::default();
-    make_artifact.has_module_graph_change = false;
 
-    make_artifact = update_module_graph(compilation, make_artifact, params)
+    // Modules imported by `importModule` are passively loaded.
+    let mut build_dependencies = self.cutout.cutout_artifact(&mut make_artifact, params);
+
+    compilation
+      .plugin_driver
+      .compilation_hooks
+      .revoked_modules
+      .call(&make_artifact.revoked_modules)
+      .await?;
+
+    let mut build_dependencies_id = build_dependencies
+      .iter()
+      .map(|(id, _)| *id)
+      .collect::<HashSet<_>>();
+    for mut dep_status in self.request_dep_map.iter_mut() {
+      if build_dependencies_id.contains(&dep_status.id) {
+        dep_status.should_update = true;
+        build_dependencies_id.remove(&dep_status.id);
+      }
+    }
+    build_dependencies.retain(|dep| build_dependencies_id.contains(&dep.0));
+    make_artifact = repair(compilation, make_artifact, build_dependencies)
       .await
       .unwrap_or_default();
 
-    let mut ctx = MakeTaskContext::new(
-      compilation,
-      make_artifact,
-      new_cache(
-        compilation.options.clone(),
-        compilation.input_filesystem.clone(),
-      ),
-    );
+    let mut ctx = MakeTaskContext::new(compilation, make_artifact, Arc::new(MemoryCache));
     let (event_sender, event_receiver) = unbounded_channel();
     let (stop_sender, stop_receiver) = oneshot::channel();
     self.event_sender = Some(event_sender.clone());
@@ -100,6 +116,8 @@ impl ModuleExecutor {
         .send(ctx.transform_to_make_artifact())
         .expect("should success");
     }));
+
+    Ok(())
   }
 
   pub async fn hook_after_finish_modules(&mut self, compilation: &mut Compilation) {
@@ -116,54 +134,22 @@ impl ModuleExecutor {
       panic!("receive make artifact failed");
     }
 
+    let cutout = std::mem::take(&mut self.cutout);
+    cutout.fix_artifact(&mut self.make_artifact);
+
+    let mut mg = compilation.make_artifact.get_module_graph_mut();
     let module_assets = std::mem::take(&mut self.module_assets);
-    for (original_module_identifier, files) in module_assets {
-      let assets = compilation
-        .module_assets
-        .entry(original_module_identifier)
-        .or_default();
-      for file in files {
-        assets.insert(file);
+    for (original_module_identifier, assets) in module_assets {
+      // recursive import module may not exist the module, just skip it
+      if let Some(module) = mg.module_by_identifier_mut(&original_module_identifier) {
+        module.build_info_mut().assets.extend(assets);
       }
     }
 
-    let module_code_generation_modules = std::mem::take(&mut self.module_code_generated_modules);
-    for (original_module_identifier, code_generation_modules) in module_code_generation_modules {
-      for module_identifier in code_generation_modules {
-        if let Some(module_assets) = compilation.module_assets.remove(&module_identifier) {
-          compilation
-            .module_assets
-            .entry(original_module_identifier)
-            .or_default()
-            .extend(module_assets);
-        }
-      }
-    }
+    //    let module_code_generation_modules = std::mem::take(&mut self.module_code_generated_modules);
 
-    let assets = std::mem::take(&mut self.assets);
-    for (filename, asset) in assets {
-      compilation.emit_asset(filename, asset);
-    }
-
-    let diagnostics = self.make_artifact.take_diagnostics();
+    let diagnostics = self.make_artifact.diagnostics();
     compilation.extend_diagnostics(diagnostics);
-
-    let built_modules = self.make_artifact.take_built_modules();
-    if let Some(mutations) = compilation.incremental.mutations_write() {
-      for id in &built_modules {
-        mutations.add(Mutation::ModuleRemove { module: *id });
-      }
-    }
-    for id in built_modules {
-      compilation.built_modules.insert(id);
-    }
-
-    let revoked_modules = self.make_artifact.take_revoked_modules();
-    if let Some(mutations) = compilation.incremental.mutations_write() {
-      for id in revoked_modules {
-        mutations.add(Mutation::ModuleRemove { module: id });
-      }
-    }
 
     let code_generated_modules = std::mem::take(&mut self.code_generated_modules);
     for id in code_generated_modules {
@@ -210,12 +196,26 @@ impl ModuleExecutor {
           original_module_context.unwrap_or(Context::from("")),
         );
         let dep_id = *dep.id();
-        v.insert(dep_id);
+        v.insert(DepStatus {
+          id: dep_id,
+          should_update: false,
+        });
         (ExecuteParam::Entry(Box::new(dep), layer.clone()), dep_id)
       }
-      Entry::Occupied(v) => {
-        let dep_id = *v.get();
-        (ExecuteParam::DependencyId(dep_id), dep_id)
+      Entry::Occupied(mut v) => {
+        let dep_status = v.get_mut();
+        let dep_id = dep_status.id;
+        if dep_status.should_update {
+          let dep = LoaderImportDependency::new_with_id(
+            dep_id,
+            request.clone(),
+            original_module_context.unwrap_or(Context::from("")),
+          );
+          dep_status.should_update = false;
+          (ExecuteParam::Entry(Box::new(dep), layer.clone()), dep_id)
+        } else {
+          (ExecuteParam::DependencyId(dep_id), dep_id)
+        }
       }
     };
 
@@ -242,11 +242,7 @@ impl ModuleExecutor {
         .module_assets
         .entry(original_module_identifier)
         .or_default()
-        .extend(execute_result.assets.clone());
-    }
-
-    for (key, value) in assets {
-      self.assets.insert(key.clone(), value);
+        .extend(assets);
     }
 
     for id in code_generated_modules {

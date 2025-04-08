@@ -1,15 +1,18 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AsContextDependency, Compilation, Dependency, DependencyId, DependencyTemplate, DependencyType,
-  ExtendedReferencedExport, ModuleDependency, ModuleGraph, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource,
+  AsContextDependency, Dependency, DependencyId, DependencyTemplate, DependencyType,
+  ExtendedReferencedExport, FactorizeInfo, ModuleDependency, ModuleGraph, RuntimeSpec,
+  TemplateContext, TemplateReplaceSource,
 };
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct WebpackIsIncludedDependency {
   pub start: u32,
   pub end: u32,
   pub id: DependencyId,
   pub request: String,
+  factorize_info: FactorizeInfo,
 }
 
 impl WebpackIsIncludedDependency {
@@ -19,12 +22,14 @@ impl WebpackIsIncludedDependency {
       end,
       id: DependencyId::default(),
       request,
+      factorize_info: Default::default(),
     }
   }
 }
 
 impl AsContextDependency for WebpackIsIncludedDependency {}
 
+#[cacheable_dyn]
 impl Dependency for WebpackIsIncludedDependency {
   fn dependency_type(&self) -> &DependencyType {
     &DependencyType::WebpackIsIncluded
@@ -47,6 +52,7 @@ impl Dependency for WebpackIsIncludedDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for WebpackIsIncludedDependency {
   fn weak(&self) -> bool {
     true
@@ -55,8 +61,17 @@ impl ModuleDependency for WebpackIsIncludedDependency {
   fn request(&self) -> &str {
     &self.request
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for WebpackIsIncludedDependency {
   fn apply(
     &self,
@@ -77,17 +92,5 @@ impl DependencyTemplate for WebpackIsIncludedDependency {
       .unwrap_or(false);
 
     source.replace(self.start, self.end, included.to_string().as_str(), None);
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }

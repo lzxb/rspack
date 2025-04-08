@@ -1,9 +1,12 @@
 import nodePath from "node:path";
-import type { JsAssetInfo, RawFuncUseCtx } from "@rspack/binding";
+import type { AssetInfo, RawFuncUseCtx } from "@rspack/binding";
 import { type SyncParseReturnType, ZodIssueCode, z } from "zod";
 import { Chunk } from "../Chunk";
+import { ChunkGraph } from "../ChunkGraph";
 import type { Compilation, PathData } from "../Compilation";
 import { Module } from "../Module";
+import ModuleGraph from "../ModuleGraph";
+import type { ResolveCallback } from "./adapterRuleUse";
 import type * as t from "./types";
 import { ZodRspackCrossChecker } from "./utils";
 
@@ -12,7 +15,7 @@ const filenameTemplate = z.string() satisfies z.ZodType<t.FilenameTemplate>;
 const filename = filenameTemplate.or(
 	z
 		.function()
-		.args(z.custom<PathData>(), z.custom<JsAssetInfo>().optional())
+		.args(z.custom<PathData>(), z.custom<AssetInfo>().optional())
 		.returns(z.string())
 ) satisfies z.ZodType<t.Filename>;
 
@@ -236,7 +239,12 @@ const enabledLibraryTypes = z.array(
 	libraryType
 ) satisfies z.ZodType<t.EnabledLibraryTypes>;
 
-const clean = z.boolean() satisfies z.ZodType<t.Clean>;
+const clean = z.union([
+	z.boolean(),
+	z.strictObject({
+		keep: z.string().optional()
+	})
+]) satisfies z.ZodType<t.Clean>;
 
 const outputModule = z.boolean() satisfies z.ZodType<t.OutputModule>;
 
@@ -269,7 +277,8 @@ const chunkFormat = z
 const workerPublicPath = z.string() satisfies z.ZodType<t.WorkerPublicPath>;
 
 const trustedTypes = z.strictObject({
-	policyName: z.string().optional()
+	policyName: z.string().optional(),
+	onPolicyCreationFailure: z.enum(["continue", "stop"]).optional()
 }) satisfies z.ZodType<t.TrustedTypes>;
 
 const hashDigest = z.string() satisfies z.ZodType<t.HashDigest>;
@@ -371,12 +380,14 @@ const output = z.strictObject({
 //#endregion
 
 //#region Resolve
-const resolveAlias = z.record(
-	z
-		.literal(false)
-		.or(z.string())
-		.or(z.array(z.string().or(z.literal(false))))
-) satisfies z.ZodType<t.ResolveAlias>;
+const resolveAlias = z
+	.record(
+		z
+			.literal(false)
+			.or(z.string())
+			.or(z.array(z.string().or(z.literal(false))))
+	)
+	.or(z.literal(false)) satisfies z.ZodType<t.ResolveAlias>;
 
 const resolveTsConfigFile = z.string();
 const resolveTsConfig = resolveTsConfigFile.or(
@@ -406,7 +417,8 @@ const baseResolveOptions = z.strictObject({
 	extensionAlias: z.record(z.string().or(z.array(z.string()))).optional(),
 	aliasFields: z.array(z.string()).optional(),
 	restrictions: z.array(z.string()).optional(),
-	roots: z.array(z.string()).optional()
+	roots: z.array(z.string()).optional(),
+	pnp: z.boolean().optional()
 }) satisfies z.ZodType<t.ResolveOptions>;
 
 const resolveOptions: z.ZodType<t.ResolveOptions> = baseResolveOptions.extend({
@@ -445,7 +457,8 @@ const ruleSetLoaderOptions = z
 const ruleSetLoaderWithOptions = z.strictObject({
 	ident: z.string().optional(),
 	loader: ruleSetLoader,
-	options: ruleSetLoaderOptions.optional()
+	options: ruleSetLoaderOptions.optional(),
+	parallel: z.boolean().optional()
 }) satisfies z.ZodType<t.RuleSetLoaderWithOptions>;
 
 const ruleSetUseItem = ruleSetLoader.or(
@@ -593,9 +606,10 @@ const assetGeneratorDataUrlOptions = z.strictObject({
 const assetGeneratorDataUrlFunction = z
 	.function()
 	.args(
+		z.instanceof(Buffer),
 		z.strictObject({
-			content: z.string(),
-			filename: z.string()
+			filename: z.string(),
+			module: z.custom<Module>()
 		})
 	)
 	.returns(z.string()) satisfies z.ZodType<t.AssetGeneratorDataUrlFunction>;
@@ -654,13 +668,18 @@ const cssModuleGeneratorOptions = z.strictObject({
 	esModule: cssGeneratorEsModule.optional()
 }) satisfies z.ZodType<t.CssModuleGeneratorOptions>;
 
+const jsonGeneratorOptions = z.strictObject({
+	JSONParse: z.boolean().optional()
+}) satisfies z.ZodType<t.JsonGeneratorOptions>;
+
 const generatorOptionsByModuleTypeKnown = z.strictObject({
 	asset: assetGeneratorOptions.optional(),
 	"asset/inline": assetInlineGeneratorOptions.optional(),
 	"asset/resource": assetResourceGeneratorOptions.optional(),
 	css: cssGeneratorOptions.optional(),
 	"css/auto": cssAutoGeneratorOptions.optional(),
-	"css/module": cssModuleGeneratorOptions.optional()
+	"css/module": cssModuleGeneratorOptions.optional(),
+	json: jsonGeneratorOptions.optional()
 }) satisfies z.ZodType<t.GeneratorOptionsByModuleTypeKnown>;
 
 const generatorOptionsByModuleTypeUnknown = z.record(
@@ -796,7 +815,7 @@ export const externalsType = z.enum([
 ]) satisfies z.ZodType<t.ExternalsType>;
 //#endregion
 
-const ZodExternalObjectValue = new ZodRspackCrossChecker<
+const externalObjectValue = new ZodRspackCrossChecker<
 	t.ExternalItemUmdValue | t.ExternalItemObjectValue
 >({
 	patterns: [
@@ -845,7 +864,7 @@ const externalItemValue = z
 	.string()
 	.or(z.boolean())
 	.or(z.string().array().min(1))
-	.or(ZodExternalObjectValue) satisfies z.ZodType<t.ExternalItemValue>;
+	.or(externalObjectValue) satisfies z.ZodType<t.ExternalItemValue>;
 
 const externalItemObjectUnknown = z.record(
 	externalItemValue
@@ -857,8 +876,24 @@ const externalItemFunctionData = z.strictObject({
 	request: z.string().optional(),
 	contextInfo: z
 		.strictObject({
-			issuer: z.string()
+			issuer: z.string(),
+			issuerLayer: z.string().or(z.null()).optional()
 		})
+		.optional(),
+	getResolve: z
+		.function()
+		.returns(
+			z
+				.function()
+				.args(z.string(), z.string())
+				.returns(z.promise(z.string()))
+				.or(
+					z
+						.function()
+						.args(z.string(), z.string(), z.custom<ResolveCallback>())
+						.returns(z.void())
+				)
+		)
 		.optional()
 }) satisfies z.ZodType<t.ExternalItemFunctionData>;
 
@@ -870,7 +905,7 @@ const externalItem = z
 		z
 			.function()
 			.args(
-				externalItemFunctionData,
+				externalItemFunctionData as z.ZodType<t.ExternalItemFunctionData>,
 				z
 					.function()
 					.args(
@@ -884,14 +919,19 @@ const externalItem = z
 	.or(
 		z
 			.function()
-			.args(externalItemFunctionData)
+			.args(externalItemFunctionData as z.ZodType<t.ExternalItemFunctionData>)
 			.returns(z.promise(externalItemValue))
+	)
+	.or(
+		z
+			.function()
+			.args(externalItemFunctionData as z.ZodType<t.ExternalItemFunctionData>)
+			.returns(externalItemValue)
 	) satisfies z.ZodType<t.ExternalItem>;
 
 const externals = externalItem
 	.array()
 	.or(externalItem) satisfies z.ZodType<t.Externals>;
-//#endregion
 
 //#region ExternalsPresets
 const externalsPresets = z.strictObject({
@@ -1142,11 +1182,12 @@ const optimizationRuntimeChunk = z
 		})
 	) satisfies z.ZodType<t.OptimizationRuntimeChunk>;
 
-const optimizationSplitChunksNameFunction = z.function().args(
-	z.instanceof(Module).optional()
-	// FIXME: z.array(z.instanceof(Chunk)).optional(), z.string()
-	// FIXME: Chunk[],   															cacheChunkKey
-) satisfies z.ZodType<t.OptimizationSplitChunksNameFunction>;
+const optimizationSplitChunksNameFunction = z
+	.function()
+	.args(z.instanceof(Module), z.array(z.instanceof(Chunk)), z.string())
+	.returns(
+		z.string().optional()
+	) satisfies z.ZodType<t.OptimizationSplitChunksNameFunction>;
 
 const optimizationSplitChunksName = z
 	.string()
@@ -1169,6 +1210,7 @@ const sharedOptimizationSplitChunksCacheGroup = {
 	minChunks: z.number().min(1).optional(),
 	usedExports: z.boolean().optional(),
 	name: optimizationSplitChunksName.optional(),
+	filename: filename.optional(),
 	minSize: optimizationSplitChunksSizes.optional(),
 	maxSize: optimizationSplitChunksSizes.optional(),
 	maxAsyncSize: optimizationSplitChunksSizes.optional(),
@@ -1184,15 +1226,26 @@ const optimizationSplitChunksCacheGroup = z.strictObject({
 		.or(
 			z
 				.function()
-				.args(z.instanceof(Module) /** FIXME: lack of CacheGroupContext */)
+				.args(
+					z.instanceof(Module) /** FIXME: lack of CacheGroupContext */,
+					z.object({
+						moduleGraph: z.instanceof(ModuleGraph),
+						chunkGraph: z.instanceof(ChunkGraph)
+					})
+				)
+				.returns(z.boolean())
 		)
 		.optional(),
 	priority: z.number().optional(),
 	enforce: z.boolean().optional(),
-	filename: z.string().optional(),
 	reuseExistingChunk: z.boolean().optional(),
 	type: z.string().or(z.instanceof(RegExp)).optional(),
 	idHint: z.string().optional(),
+	layer: z
+		.string()
+		.or(z.instanceof(RegExp))
+		.or(z.function(z.tuple([z.string().optional()]), z.boolean()))
+		.optional(),
 	...sharedOptimizationSplitChunksCacheGroup
 }) satisfies z.ZodType<t.OptimizationSplitChunksCacheGroup>;
 
@@ -1216,7 +1269,9 @@ const optimizationSplitChunksOptions = z.strictObject({
 
 const optimization = z.strictObject({
 	moduleIds: z.enum(["named", "natural", "deterministic"]).optional(),
-	chunkIds: z.enum(["natural", "named", "deterministic"]).optional(),
+	chunkIds: z
+		.enum(["natural", "named", "deterministic", "size", "total-size"])
+		.optional(),
 	minimize: z.boolean().optional(),
 	minimizer: z.literal("...").or(plugin).array().optional(),
 	mergeDuplicateChunks: z.boolean().optional(),
@@ -1232,7 +1287,8 @@ const optimization = z.strictObject({
 	usedExports: z.enum(["global"]).or(z.boolean()).optional(),
 	mangleExports: z.enum(["size", "deterministic"]).or(z.boolean()).optional(),
 	nodeEnv: z.union([z.string(), z.literal(false)]).optional(),
-	emitOnErrors: z.boolean().optional()
+	emitOnErrors: z.boolean().optional(),
+	avoidEntryIife: z.boolean().optional()
 }) satisfies z.ZodType<t.Optimization>;
 //#endregion
 
@@ -1250,17 +1306,6 @@ const rspackFutureOptions = z.strictObject({
 		.optional()
 }) satisfies z.ZodType<t.RspackFutureOptions>;
 
-const listenOptions = z.object({
-	port: z.number().optional(),
-	host: z.string().optional(),
-	backlog: z.number().optional(),
-	path: z.string().optional(),
-	exclusive: z.boolean().optional(),
-	readableAll: z.boolean().optional(),
-	writableAll: z.boolean().optional(),
-	ipv6Only: z.boolean().optional()
-});
-
 const experimentCacheOptions = z
 	.object({
 		type: z.enum(["memory"])
@@ -1268,32 +1313,41 @@ const experimentCacheOptions = z
 	.or(
 		z.object({
 			type: z.enum(["persistent"]),
-			snapshot: z.strictObject({
-				immutablePaths: z.string().or(z.instanceof(RegExp)).array(),
-				unmanagedPaths: z.string().or(z.instanceof(RegExp)).array(),
-				managedPaths: z.string().or(z.instanceof(RegExp)).array()
-			}),
-			storage: z.strictObject({
-				type: z.enum(["filesystem"]),
-				directory: z.string()
-			})
+			buildDependencies: z.string().array().optional(),
+			version: z.string().optional(),
+			snapshot: z
+				.object({
+					immutablePaths: z
+						.string()
+						.or(z.instanceof(RegExp))
+						.array()
+						.optional(),
+					unmanagedPaths: z
+						.string()
+						.or(z.instanceof(RegExp))
+						.array()
+						.optional(),
+					managedPaths: z.string().or(z.instanceof(RegExp)).array().optional()
+				})
+				.optional(),
+			storage: z
+				.object({
+					type: z.enum(["filesystem"]),
+					directory: z.string().optional()
+				})
+				.optional()
 		})
 	);
 
 const lazyCompilationOptions = z.object({
-	backend: z
-		.object({
-			client: z.string().optional(),
-			listen: z.number().optional().or(listenOptions),
-			protocol: z.enum(["http", "https"]).optional()
-		})
-		.optional(),
 	imports: z.boolean().optional(),
 	entries: z.boolean().optional(),
 	test: z
 		.instanceof(RegExp)
 		.or(z.function().args(z.custom<Module>()).returns(z.boolean()))
-		.optional()
+		.optional(),
+	client: z.string().optional(),
+	serverUrl: z.string().optional()
 }) satisfies z.ZodType<t.LazyCompilationOptions>;
 
 const incremental = z.strictObject({
@@ -1301,7 +1355,10 @@ const incremental = z.strictObject({
 	inferAsyncModules: z.boolean().optional(),
 	providedExports: z.boolean().optional(),
 	dependenciesDiagnostics: z.boolean().optional(),
+	sideEffects: z.boolean().optional(),
 	buildChunkGraph: z.boolean().optional(),
+	moduleIds: z.boolean().optional(),
+	chunkIds: z.boolean().optional(),
 	modulesHashes: z.boolean().optional(),
 	modulesCodegen: z.boolean().optional(),
 	modulesRuntimeRequirements: z.boolean().optional(),
@@ -1310,6 +1367,29 @@ const incremental = z.strictObject({
 	chunksRender: z.boolean().optional(),
 	emitAssets: z.boolean().optional()
 }) satisfies z.ZodType<t.Incremental>;
+
+// Define buildHttp options schema
+const buildHttpOptions = z.object({
+	allowedUris: z.array(z.union([z.string(), z.instanceof(RegExp)])),
+	lockfileLocation: z.string().optional(),
+	cacheLocation: z.union([z.string(), z.literal(false)]).optional(),
+	upgrade: z.boolean().optional(),
+	// proxy: z.string().optional(),
+	// frozen: z.boolean().optional(),
+	httpClient: z
+		.function()
+		.args(z.string(), z.record(z.string()))
+		.returns(
+			z.promise(
+				z.object({
+					status: z.number(),
+					headers: z.record(z.string()),
+					body: z.instanceof(Buffer)
+				})
+			)
+		)
+		.optional()
+}) satisfies z.ZodType<t.HttpUriOptions>;
 
 const experiments = z.strictObject({
 	cache: z.boolean().optional().or(experimentCacheOptions),
@@ -1320,8 +1400,11 @@ const experiments = z.strictObject({
 	css: z.boolean().optional(),
 	layers: z.boolean().optional(),
 	incremental: z.boolean().or(incremental).optional(),
+	parallelCodeSplitting: z.boolean().optional(),
 	futureDefaults: z.boolean().optional(),
-	rspackFuture: rspackFutureOptions.optional()
+	rspackFuture: rspackFutureOptions.optional(),
+	buildHttp: buildHttpOptions.optional(),
+	parallelLoader: z.boolean().optional()
 }) satisfies z.ZodType<t.Experiments>;
 //#endregion
 
@@ -1386,6 +1469,7 @@ const performance = z
 export const rspackOptions = z.strictObject({
 	name: name.optional(),
 	dependencies: dependencies.optional(),
+	extends: z.union([z.string(), z.array(z.string())]).optional(),
 	entry: entry.optional(),
 	output: output.optional(),
 	target: target.optional(),

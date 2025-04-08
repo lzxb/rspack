@@ -1,16 +1,18 @@
 use std::borrow::Cow;
 
 use async_trait::async_trait;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   async_module_factory, impl_module_meta_info, impl_source_map_config, module_update_hash,
-  rspack_sources::Source, sync_module_factory, AsyncDependenciesBlock,
+  rspack_sources::BoxSource, sync_module_factory, AsyncDependenciesBlock,
   AsyncDependenciesBlockIdentifier, BoxDependency, BuildContext, BuildInfo, BuildMeta, BuildResult,
   CodeGenerationResult, Compilation, ConcatenationScope, Context, DependenciesBlock, DependencyId,
   FactoryMeta, LibIdentOptions, Module, ModuleIdentifier, ModuleType, RuntimeGlobals, RuntimeSpec,
   SourceType,
 };
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::source_map::SourceMapKind;
 
 use super::{
@@ -23,6 +25,7 @@ use super::{
 use crate::ConsumeVersion;
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug)]
 pub struct ProvideSharedModule {
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
@@ -39,8 +42,8 @@ pub struct ProvideSharedModule {
   required_version: Option<ConsumeVersion>,
   strict_version: Option<bool>,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
 }
 
 impl ProvideSharedModule {
@@ -74,8 +77,11 @@ impl ProvideSharedModule {
       required_version,
       strict_version,
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: BuildInfo {
+        strict: true,
+        ..Default::default()
+      },
+      build_meta: Default::default(),
       source_map_kind: SourceMapKind::empty(),
     }
   }
@@ -109,16 +115,13 @@ impl DependenciesBlock for ProvideSharedModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait]
 impl Module for ProvideSharedModule {
   impl_module_meta_info!();
 
   fn size(&self, _source_type: Option<&SourceType>, _compilation: Option<&Compilation>) -> f64 {
     42.0
-  }
-
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
   }
 
   fn module_type(&self) -> &ModuleType {
@@ -129,7 +132,7 @@ impl Module for ProvideSharedModule {
     &[SourceType::ShareInit]
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -157,19 +160,14 @@ impl Module for ProvideSharedModule {
     }
 
     Ok(BuildResult {
-      build_info: BuildInfo {
-        strict: true,
-        ..Default::default()
-      },
-      build_meta: Default::default(),
       dependencies,
       blocks,
       ..Default::default()
     })
   }
 
-  #[tracing::instrument(name = "ProvideSharedModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("ProvideSharedModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -214,14 +212,14 @@ impl Module for ProvideSharedModule {
     Ok(code_generation_result)
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    module_update_hash(self, hasher, compilation, runtime);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

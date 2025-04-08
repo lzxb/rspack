@@ -1,6 +1,8 @@
-use std::cmp::Ordering;
-use std::hash::BuildHasherDefault;
-use std::{fmt::Debug, hash::Hash};
+use std::{
+  cmp::Ordering,
+  fmt::Debug,
+  hash::{BuildHasherDefault, Hash},
+};
 
 use indexmap::IndexMap;
 use itertools::Itertools;
@@ -10,11 +12,10 @@ use rspack_hash::{RspackHash, RspackHashDigest};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 
 use crate::{
-  compare_chunk_group, merge_runtime, sort_group_by_index, ChunkGraph, ChunkGroupOrderKey,
-  RenderManifestEntry,
+  chunk_graph_chunk::ChunkId, compare_chunk_group, merge_runtime, sort_group_by_index, ChunkGraph,
+  ChunkGroupByUkey, ChunkGroupOrderKey, ChunkGroupUkey, ChunkIdsArtifact, ChunkUkey, Compilation,
+  EntryOptions, Filename, ModuleGraph, RenderManifestEntry, RuntimeSpec, SourceType,
 };
-use crate::{ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, SourceType};
-use crate::{Compilation, EntryOptions, Filename, ModuleGraph, RuntimeSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkKind {
@@ -58,7 +59,6 @@ pub struct Chunk {
   // - The name of chunks create by dynamic import is `None` unless users use
   // magic comment like `import(/* webpackChunkName: "someChunk" * / './someModule.js')` to specify it.
   name: Option<String>,
-  id: Option<String>,
   id_name_hints: HashSet<String>,
   filename_template: Option<Filename>,
   css_filename_template: Option<Filename>,
@@ -108,12 +108,19 @@ impl Chunk {
     self.css_filename_template = filename_template;
   }
 
-  pub fn id(&self) -> Option<&str> {
-    self.id.as_deref()
+  pub fn id<'a>(&self, chunk_ids: &'a ChunkIdsArtifact) -> Option<&'a ChunkId> {
+    ChunkGraph::get_chunk_id(chunk_ids, &self.ukey)
   }
 
-  pub fn set_id(&mut self, id: Option<String>) {
-    self.id = id;
+  pub fn expect_id<'a>(&self, chunk_ids: &'a ChunkIdsArtifact) -> &'a ChunkId {
+    self
+      .id(chunk_ids)
+      .expect("Should set id before calling expect_id")
+  }
+
+  pub fn set_id(&self, chunk_ids: &mut ChunkIdsArtifact, id: impl Into<ChunkId>) -> bool {
+    let id = id.into();
+    ChunkGraph::set_chunk_id(chunk_ids, self.ukey, id)
   }
 
   pub fn prevent_integration(&self) -> bool {
@@ -136,6 +143,10 @@ impl Chunk {
     &self.groups
   }
 
+  pub fn clear_groups(&mut self) {
+    self.groups.clear();
+  }
+
   pub fn add_group(&mut self, group: ChunkGroupUkey) {
     self.groups.insert(group);
   }
@@ -146,6 +157,10 @@ impl Chunk {
 
   pub fn remove_group(&mut self, chunk_group: &ChunkGroupUkey) -> bool {
     self.groups.remove(chunk_group)
+  }
+
+  pub fn get_number_of_groups(&self) -> usize {
+    self.groups.len()
   }
 
   pub fn runtime(&self) -> &RuntimeSpec {
@@ -263,7 +278,6 @@ impl Chunk {
       filename_template: None,
       css_filename_template: None,
       ukey: ChunkUkey::new(),
-      id: None,
       id_name_hints: Default::default(),
       prevent_integration: false,
       files: Default::default(),
@@ -310,6 +324,9 @@ impl Chunk {
       });
     new_chunk.id_name_hints.extend(self.id_name_hints.clone());
     new_chunk.runtime = merge_runtime(&new_chunk.runtime, &self.runtime);
+    if new_chunk.filename_template.is_none() {
+      new_chunk.filename_template = self.filename_template.clone();
+    }
   }
 
   pub fn can_be_initial(&self, chunk_group_by_ukey: &ChunkGroupByUkey) -> bool {
@@ -478,7 +495,80 @@ impl Chunk {
   }
 
   pub fn has_async_chunks(&self, chunk_group_by_ukey: &ChunkGroupByUkey) -> bool {
-    !self.get_all_async_chunks(chunk_group_by_ukey).is_empty()
+    // The reason why we don't just return !self.get_all_async_chunks(chunk_group_by_ukey).is_empty() here is
+    // get_all_async_chunks will check the whether the chunk is inside Entrypoint, which cause the chunk not return
+    // as a async chunk, but has_async_chunks is used to check whether need to add the chunk loading runtime, which
+    // is about loading the async chunks, so even the chunk is inside Entrypoint but loading it indeed need the
+    // chunk loading runtime.
+    // For a real case checkout the test: `rspack-test-tools/configCases/chunk-loading/depend-on-with-chunk-load`
+    let mut queue = UkeyIndexSet::default();
+
+    let initial_chunks = self
+      .groups
+      .iter()
+      .map(|chunk_group| chunk_group_by_ukey.expect_get(chunk_group))
+      .map(|group| group.chunks.iter().copied().collect::<UkeySet<_>>())
+      .reduce(|acc, prev| acc.intersection(&prev).copied().collect::<UkeySet<_>>())
+      .unwrap_or_default();
+
+    let mut visit_chunk_groups = UkeySet::default();
+
+    for chunk_group_ukey in self.get_sorted_groups_iter(chunk_group_by_ukey) {
+      if let Some(chunk_group) = chunk_group_by_ukey.get(chunk_group_ukey) {
+        for child_ukey in chunk_group
+          .children
+          .iter()
+          .sorted_by(|a, b| sort_group_by_index(a, b, chunk_group_by_ukey))
+        {
+          if let Some(chunk_group) = chunk_group_by_ukey.get(child_ukey) {
+            queue.insert(chunk_group.ukey);
+          }
+        }
+      }
+    }
+
+    fn check_chunks(
+      chunk_group_by_ukey: &ChunkGroupByUkey,
+      initial_chunks: &UkeySet<ChunkUkey>,
+      chunk_group_ukey: &ChunkGroupUkey,
+      visit_chunk_groups: &mut UkeySet<ChunkGroupUkey>,
+    ) -> bool {
+      let Some(chunk_group) = chunk_group_by_ukey.get(chunk_group_ukey) else {
+        return false;
+      };
+      for chunk_ukey in chunk_group.chunks.iter() {
+        if !initial_chunks.contains(chunk_ukey) {
+          return true;
+        }
+      }
+      for group_ukey in chunk_group.children.iter() {
+        if !visit_chunk_groups.contains(group_ukey) {
+          visit_chunk_groups.insert(*group_ukey);
+          if check_chunks(
+            chunk_group_by_ukey,
+            initial_chunks,
+            group_ukey,
+            visit_chunk_groups,
+          ) {
+            return true;
+          }
+        }
+      }
+      false
+    }
+
+    for group_ukey in queue.iter() {
+      if check_chunks(
+        chunk_group_by_ukey,
+        &initial_chunks,
+        group_ukey,
+        &mut visit_chunk_groups,
+      ) {
+        return true;
+      }
+    }
+
+    false
   }
 
   pub fn get_all_async_chunks(
@@ -578,18 +668,14 @@ impl Chunk {
     chunks
   }
 
-  pub fn expect_id(&self) -> &str {
-    self
-      .id
-      .as_ref()
-      .expect("Should set id before calling expect_id")
-  }
-
-  pub fn name_for_filename_template(&self) -> Option<&str> {
+  pub fn name_for_filename_template<'a>(
+    &'a self,
+    chunk_ids: &'a ChunkIdsArtifact,
+  ) -> Option<&'a str> {
     if self.name.is_some() {
       self.name.as_deref()
     } else {
-      self.id.as_deref()
+      self.id(chunk_ids).map(|id| id.as_str())
     }
   }
 
@@ -602,7 +688,7 @@ impl Chunk {
   }
 
   pub fn update_hash(&self, hasher: &mut RspackHash, compilation: &Compilation) {
-    self.id.hash(hasher);
+    self.id(&compilation.chunk_ids_artifact).hash(hasher);
     for module in compilation
       .chunk_graph
       .get_ordered_chunk_modules(&self.ukey, &compilation.get_module_graph())
@@ -635,7 +721,7 @@ impl Chunk {
       .chunk_graph
       .get_chunk_entry_modules_with_chunk_group_iterable(&self.ukey)
     {
-      compilation.chunk_graph.get_module_id(*module).hash(hasher);
+      ChunkGraph::get_module_id(&compilation.module_ids_artifact, *module).hash(hasher);
       if let Some(chunk_group) = compilation.chunk_group_by_ukey.get(chunk_group) {
         chunk_group.id(compilation).hash(hasher);
       }
@@ -716,16 +802,20 @@ impl Chunk {
     &self,
     order: &ChunkGroupOrderKey,
     compilation: &Compilation,
-  ) -> Option<Vec<String>> {
+  ) -> Option<Vec<ChunkId>> {
     self
       .get_children_of_type_in_order(order, compilation, true)
       .map(|order_children| {
         order_children
           .iter()
           .flat_map(|(_, child_chunks)| {
-            child_chunks
-              .iter()
-              .filter_map(|chunk_ukey| compilation.chunk_by_ukey.expect_get(chunk_ukey).id.clone())
+            child_chunks.iter().filter_map(|chunk_ukey| {
+              compilation
+                .chunk_by_ukey
+                .expect_get(chunk_ukey)
+                .id(&compilation.chunk_ids_artifact)
+                .cloned()
+            })
           })
           .collect_vec()
       })
@@ -735,7 +825,8 @@ impl Chunk {
     &self,
     include_direct_children: bool,
     compilation: &Compilation,
-  ) -> HashMap<ChunkGroupOrderKey, IndexMap<String, Vec<String>, BuildHasherDefault<FxHasher>>> {
+  ) -> HashMap<ChunkGroupOrderKey, IndexMap<ChunkId, Vec<ChunkId>, BuildHasherDefault<FxHasher>>>
+  {
     let mut result = HashMap::default();
 
     fn add_child_ids_by_orders_to_map(
@@ -743,13 +834,13 @@ impl Chunk {
       order: &ChunkGroupOrderKey,
       result: &mut HashMap<
         ChunkGroupOrderKey,
-        IndexMap<String, Vec<String>, BuildHasherDefault<FxHasher>>,
+        IndexMap<ChunkId, Vec<ChunkId>, BuildHasherDefault<FxHasher>>,
       >,
       compilation: &Compilation,
     ) {
       let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
       if let (Some(chunk_id), Some(child_chunk_ids)) = (
-        chunk.id.clone(),
+        chunk.id(&compilation.chunk_ids_artifact).cloned(),
         chunk.get_child_ids_by_order(order, compilation),
       ) {
         result

@@ -1,22 +1,38 @@
 use std::{
   fmt::{self, Debug},
+  ops::{Deref, DerefMut},
   sync::Arc,
 };
 
 use async_recursion::async_recursion;
 use bitflags::bitflags;
-use derivative::Derivative;
 use futures::future::BoxFuture;
+use rspack_cacheable::{cacheable, with::Unsupported};
 use rspack_error::Result;
 use rspack_macros::MergeFrom;
 use rspack_regex::RspackRegex;
 use rspack_util::{try_all, try_any, MergeFrom};
 use rustc_hash::FxHashMap as HashMap;
+use tokio::sync::OnceCell;
 
-use crate::{Filename, Module, ModuleType, PublicPath, Resolve};
+use crate::{Compilation, Filename, Module, ModuleType, PublicPath, Resolve};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ParserOptionsMap(HashMap<String, ParserOptions>);
+
+impl Deref for ParserOptionsMap {
+  type Target = HashMap<String, ParserOptions>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+impl DerefMut for ParserOptionsMap {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.0
+  }
+}
 
 impl FromIterator<(String, ParserOptions)> for ParserOptionsMap {
   fn from_iter<I: IntoIterator<Item = (String, ParserOptions)>>(i: I) -> Self {
@@ -30,6 +46,7 @@ impl ParserOptionsMap {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub enum ParserOptions {
   Asset(AssetParserOptions),
@@ -40,6 +57,7 @@ pub enum ParserOptions {
   JavascriptAuto(JavascriptParserOptions),
   JavascriptEsm(JavascriptParserOptions),
   JavascriptDynamic(JavascriptParserOptions),
+  Json(JsonParserOptions),
   Unknown,
 }
 
@@ -67,8 +85,10 @@ impl ParserOptions {
     JavascriptDynamic,
     JavascriptParserOptions
   );
+  get_variant!(get_json, Json, JsonParserOptions);
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom)]
 pub enum DynamicImportMode {
   Lazy,
@@ -92,6 +112,7 @@ impl From<&str> for DynamicImportMode {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DynamicImportFetchPriority {
   Low,
@@ -120,6 +141,7 @@ impl fmt::Display for DynamicImportFetchPriority {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom)]
 pub enum JavascriptParserUrl {
   Enable,
@@ -137,14 +159,15 @@ impl From<&str> for JavascriptParserUrl {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom)]
 pub enum JavascriptParserOrder {
   Disable,
-  Order(u32),
+  Order(i32),
 }
 
 impl JavascriptParserOrder {
-  pub fn get_order(&self) -> Option<u32> {
+  pub fn get_order(&self) -> Option<i32> {
     match self {
       Self::Disable => None,
       Self::Order(o) => Some(*o),
@@ -158,7 +181,7 @@ impl From<&str> for JavascriptParserOrder {
       "false" => Self::Disable,
       "true" => Self::Order(0),
       _ => {
-        if let Ok(order) = value.parse::<u32>() {
+        if let Ok(order) = value.parse::<i32>() {
           Self::Order(order)
         } else {
           Self::Order(0)
@@ -168,6 +191,7 @@ impl From<&str> for JavascriptParserOrder {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom)]
 pub enum ExportPresenceMode {
   None,
@@ -193,16 +217,12 @@ impl ExportPresenceMode {
       ExportPresenceMode::None => None,
       ExportPresenceMode::Warn => Some(false),
       ExportPresenceMode::Error => Some(true),
-      ExportPresenceMode::Auto => Some(
-        module
-          .build_meta()
-          .map(|m| m.strict_esm_module)
-          .unwrap_or_default(),
-      ),
+      ExportPresenceMode::Auto => Some(module.build_meta().strict_esm_module),
     }
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom)]
 pub enum OverrideStrict {
   Strict,
@@ -219,7 +239,8 @@ impl From<&str> for OverrideStrict {
   }
 }
 
-#[derive(Debug, Clone, MergeFrom)]
+#[cacheable]
+#[derive(Debug, Clone, MergeFrom, Default)]
 pub struct JavascriptParserOptions {
   pub dynamic_import_mode: Option<DynamicImportMode>,
   pub dynamic_import_preload: Option<JavascriptParserOrder>,
@@ -242,39 +263,114 @@ pub struct JavascriptParserOptions {
   pub import_dynamic: Option<bool>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct AssetParserOptions {
   pub data_url_condition: Option<AssetParserDataUrl>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub enum AssetParserDataUrl {
   Options(AssetParserDataUrlOptions),
   // TODO: Function
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct AssetParserDataUrlOptions {
   pub max_size: Option<f64>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct CssParserOptions {
   pub named_exports: Option<bool>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct CssAutoParserOptions {
   pub named_exports: Option<bool>,
 }
 
+impl From<CssParserOptions> for CssAutoParserOptions {
+  fn from(value: CssParserOptions) -> Self {
+    Self {
+      named_exports: value.named_exports,
+    }
+  }
+}
+
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct CssModuleParserOptions {
   pub named_exports: Option<bool>,
 }
 
-#[derive(Debug)]
+impl From<CssParserOptions> for CssModuleParserOptions {
+  fn from(value: CssParserOptions) -> Self {
+    Self {
+      named_exports: value.named_exports,
+    }
+  }
+}
+
+pub type JsonParseFn = Arc<dyn Fn(String) -> BoxFuture<'static, Result<String>> + Sync + Send>;
+
+#[cacheable]
+pub enum ParseOption {
+  Func(#[cacheable(with=Unsupported)] JsonParseFn),
+  None,
+}
+
+impl Debug for ParseOption {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::Func(_) => write!(f, "ParseOption::Func(...)"),
+      _ => write!(f, "ParseOption::None"),
+    }
+  }
+}
+
+impl Clone for ParseOption {
+  fn clone(&self) -> Self {
+    match self {
+      Self::Func(f) => Self::Func(f.clone()),
+      Self::None => Self::None,
+    }
+  }
+}
+
+impl MergeFrom for ParseOption {
+  fn merge_from(self, other: &Self) -> Self {
+    other.clone()
+  }
+}
+
+#[cacheable]
+#[derive(Debug, Clone, MergeFrom)]
+pub struct JsonParserOptions {
+  pub exports_depth: Option<u32>,
+  pub parse: ParseOption,
+}
+
+#[derive(Debug, Default)]
 pub struct GeneratorOptionsMap(HashMap<String, GeneratorOptions>);
+
+impl Deref for GeneratorOptionsMap {
+  type Target = HashMap<String, GeneratorOptions>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+impl DerefMut for GeneratorOptionsMap {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.0
+  }
+}
 
 impl FromIterator<(String, GeneratorOptions)> for GeneratorOptionsMap {
   fn from_iter<I: IntoIterator<Item = (String, GeneratorOptions)>>(i: I) -> Self {
@@ -288,6 +384,7 @@ impl GeneratorOptionsMap {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub enum GeneratorOptions {
   Asset(AssetGeneratorOptions),
@@ -296,6 +393,7 @@ pub enum GeneratorOptions {
   Css(CssGeneratorOptions),
   CssAuto(CssAutoGeneratorOptions),
   CssModule(CssModuleGeneratorOptions),
+  Json(JsonGeneratorOptions),
   Unknown,
 }
 
@@ -310,12 +408,24 @@ impl GeneratorOptions {
   get_variant!(get_css, Css, CssGeneratorOptions);
   get_variant!(get_css_auto, CssAuto, CssAutoGeneratorOptions);
   get_variant!(get_css_module, CssModule, CssModuleGeneratorOptions);
+  get_variant!(get_json, Json, JsonGeneratorOptions);
 
   pub fn asset_filename(&self) -> Option<&Filename> {
     self
       .get_asset()
       .and_then(|x| x.filename.as_ref())
       .or_else(|| self.get_asset_resource().and_then(|x| x.filename.as_ref()))
+  }
+
+  pub fn asset_output_path(&self) -> Option<&Filename> {
+    self
+      .get_asset()
+      .and_then(|x| x.output_path.as_ref())
+      .or_else(|| {
+        self
+          .get_asset_resource()
+          .and_then(|x| x.output_path.as_ref())
+      })
   }
 
   pub fn asset_public_path(&self) -> Option<&PublicPath> {
@@ -344,37 +454,106 @@ impl GeneratorOptions {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct AssetInlineGeneratorOptions {
   pub data_url: Option<AssetGeneratorDataUrl>,
 }
 
+impl From<AssetGeneratorOptions> for AssetInlineGeneratorOptions {
+  fn from(value: AssetGeneratorOptions) -> Self {
+    Self {
+      data_url: value.data_url,
+    }
+  }
+}
+
+#[cacheable]
+#[derive(Debug, Clone, Copy, MergeFrom)]
+struct AssetGeneratorImportModeFlags(u8);
+bitflags! {
+  impl AssetGeneratorImportModeFlags: u8 {
+    const URL = 1 << 0;
+    const PRESERVE = 1 << 1;
+  }
+}
+
+#[cacheable]
+#[derive(Debug, Clone, Copy, MergeFrom)]
+pub struct AssetGeneratorImportMode(AssetGeneratorImportModeFlags);
+
+impl AssetGeneratorImportMode {
+  pub fn is_url(&self) -> bool {
+    self.0.contains(AssetGeneratorImportModeFlags::URL)
+  }
+  pub fn is_preserve(&self) -> bool {
+    self.0.contains(AssetGeneratorImportModeFlags::PRESERVE)
+  }
+}
+
+impl From<String> for AssetGeneratorImportMode {
+  fn from(s: String) -> Self {
+    match s.as_str() {
+      "url" => Self(AssetGeneratorImportModeFlags::URL),
+      "preserve" => Self(AssetGeneratorImportModeFlags::PRESERVE),
+      _ => unreachable!("AssetGeneratorImportMode error"),
+    }
+  }
+}
+
+impl Default for AssetGeneratorImportMode {
+  fn default() -> Self {
+    Self(AssetGeneratorImportModeFlags::URL)
+  }
+}
+
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct AssetResourceGeneratorOptions {
   pub emit: Option<bool>,
   pub filename: Option<Filename>,
+  pub output_path: Option<Filename>,
   pub public_path: Option<PublicPath>,
+  pub import_mode: Option<AssetGeneratorImportMode>,
 }
 
+impl From<AssetGeneratorOptions> for AssetResourceGeneratorOptions {
+  fn from(value: AssetGeneratorOptions) -> Self {
+    Self {
+      emit: value.emit,
+      filename: value.filename,
+      output_path: value.output_path,
+      public_path: value.public_path,
+      import_mode: value.import_mode,
+    }
+  }
+}
+
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct AssetGeneratorOptions {
   pub emit: Option<bool>,
   pub filename: Option<Filename>,
+  pub output_path: Option<Filename>,
   pub public_path: Option<PublicPath>,
   pub data_url: Option<AssetGeneratorDataUrl>,
+  pub import_mode: Option<AssetGeneratorImportMode>,
 }
 
-pub struct AssetGeneratorDataUrlFnArgs {
+pub struct AssetGeneratorDataUrlFnCtx<'a> {
   pub filename: String,
-  pub content: String,
+  pub module: &'a dyn Module,
+  pub compilation: &'a Compilation,
 }
 
-pub type AssetGeneratorDataUrlFn =
-  Arc<dyn Fn(AssetGeneratorDataUrlFnArgs) -> Result<String> + Sync + Send>;
+pub type AssetGeneratorDataUrlFn = Arc<
+  dyn Fn(Vec<u8>, AssetGeneratorDataUrlFnCtx) -> BoxFuture<'static, Result<String>> + Sync + Send,
+>;
 
+#[cacheable]
 pub enum AssetGeneratorDataUrl {
   Options(AssetGeneratorDataUrlOptions),
-  Func(AssetGeneratorDataUrlFn),
+  Func(#[cacheable(with=Unsupported)] AssetGeneratorDataUrlFn),
 }
 
 impl fmt::Debug for AssetGeneratorDataUrl {
@@ -401,12 +580,14 @@ impl MergeFrom for AssetGeneratorDataUrl {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom, Hash)]
 pub struct AssetGeneratorDataUrlOptions {
   pub encoding: Option<DataUrlEncoding>,
   pub mimetype: Option<String>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom, Hash)]
 pub enum DataUrlEncoding {
   None,
@@ -432,13 +613,15 @@ impl From<String> for DataUrlEncoding {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct CssGeneratorOptions {
   pub exports_only: Option<bool>,
   pub es_module: Option<bool>,
 }
 
-#[derive(Debug, Clone, MergeFrom)]
+#[cacheable]
+#[derive(Default, Debug, Clone, MergeFrom)]
 pub struct CssAutoGeneratorOptions {
   pub exports_convention: Option<CssExportsConvention>,
   pub exports_only: Option<bool>,
@@ -446,7 +629,18 @@ pub struct CssAutoGeneratorOptions {
   pub es_module: Option<bool>,
 }
 
-#[derive(Debug, Clone, MergeFrom)]
+impl From<CssGeneratorOptions> for CssAutoGeneratorOptions {
+  fn from(value: CssGeneratorOptions) -> Self {
+    Self {
+      exports_only: value.exports_only,
+      es_module: value.es_module,
+      ..Default::default()
+    }
+  }
+}
+
+#[cacheable]
+#[derive(Default, Debug, Clone, MergeFrom)]
 pub struct CssModuleGeneratorOptions {
   pub exports_convention: Option<CssExportsConvention>,
   pub exports_only: Option<bool>,
@@ -454,9 +648,26 @@ pub struct CssModuleGeneratorOptions {
   pub es_module: Option<bool>,
 }
 
+impl From<CssGeneratorOptions> for CssModuleGeneratorOptions {
+  fn from(value: CssGeneratorOptions) -> Self {
+    Self {
+      exports_only: value.exports_only,
+      es_module: value.es_module,
+      ..Default::default()
+    }
+  }
+}
+
+#[cacheable]
+#[derive(Default, Debug, Clone, MergeFrom)]
+pub struct JsonGeneratorOptions {
+  pub json_parse: Option<bool>,
+}
+
+#[cacheable]
 #[derive(Debug, Clone, MergeFrom)]
 pub struct LocalIdentName {
-  pub template: crate::FilenameTemplate,
+  pub template: Filename,
 }
 
 impl From<String> for LocalIdentName {
@@ -467,9 +678,19 @@ impl From<String> for LocalIdentName {
   }
 }
 
+impl From<&str> for LocalIdentName {
+  fn from(value: &str) -> Self {
+    Self {
+      template: crate::Filename::from(value),
+    }
+  }
+}
+
+#[cacheable]
+#[derive(Debug, Clone, Copy)]
+struct ExportsConventionFlags(u8);
 bitflags! {
-  #[derive(Debug, Clone, Copy)]
-  struct ExportsConventionFlags: u8 {
+  impl ExportsConventionFlags: u8 {
     const ASIS = 1 << 0;
     const CAMELCASE = 1 << 1;
     const DASHES = 1 << 2;
@@ -482,6 +703,7 @@ impl MergeFrom for ExportsConventionFlags {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, MergeFrom)]
 pub struct CssExportsConvention(ExportsConventionFlags);
 
@@ -518,8 +740,8 @@ impl Default for CssExportsConvention {
   }
 }
 
-pub type DescriptionData = HashMap<String, RuleSetCondition>;
-pub type With = HashMap<String, RuleSetCondition>;
+pub type DescriptionData = HashMap<String, RuleSetConditionWithEmpty>;
+pub type With = HashMap<String, RuleSetConditionWithEmpty>;
 
 pub type RuleSetConditionFnMatcher =
   Box<dyn Fn(DataRef) -> BoxFuture<'static, Result<bool>> + Sync + Send>;
@@ -563,7 +785,7 @@ impl<'s> From<&'s serde_json::Value> for DataRef<'s> {
 }
 
 impl DataRef<'_> {
-  fn as_str(&self) -> Option<&str> {
+  pub fn as_str(&self) -> Option<&str> {
     match self {
       Self::Str(s) => Some(s),
       Self::Value(v) => v.as_str(),
@@ -594,6 +816,53 @@ impl RuleSetCondition {
       Self::Func(f) => f(data).await,
     }
   }
+
+  #[async_recursion]
+  async fn match_when_empty(&self) -> Result<bool> {
+    let res = match self {
+      RuleSetCondition::String(s) => s.is_empty(),
+      RuleSetCondition::Regexp(rspack_regex) => rspack_regex.test(""),
+      RuleSetCondition::Logical(logical) => logical.match_when_empty().await?,
+      RuleSetCondition::Array(arr) => {
+        arr.is_empty() && try_any(arr, |c| async move { c.match_when_empty().await }).await?
+      }
+      RuleSetCondition::Func(func) => func("".into()).await?,
+    };
+    Ok(res)
+  }
+}
+
+#[derive(Debug)]
+pub struct RuleSetConditionWithEmpty {
+  condition: RuleSetCondition,
+  match_when_empty: OnceCell<bool>,
+}
+
+impl RuleSetConditionWithEmpty {
+  pub fn new(condition: RuleSetCondition) -> Self {
+    Self {
+      condition,
+      match_when_empty: OnceCell::new(),
+    }
+  }
+
+  pub async fn try_match(&self, data: DataRef<'_>) -> Result<bool> {
+    self.condition.try_match(data).await
+  }
+
+  pub async fn match_when_empty(&self) -> Result<bool> {
+    self
+      .match_when_empty
+      .get_or_try_init(|| async { self.condition.match_when_empty().await })
+      .await
+      .copied()
+  }
+}
+
+impl From<RuleSetCondition> for RuleSetConditionWithEmpty {
+  fn from(condition: RuleSetCondition) -> Self {
+    Self::new(condition)
+  }
 }
 
 #[derive(Debug, Default)]
@@ -623,13 +892,33 @@ impl RuleSetLogicalConditions {
     }
     Ok(true)
   }
+
+  pub async fn match_when_empty(&self) -> Result<bool> {
+    let mut has_condition = false;
+    let mut match_when_empty = true;
+    if let Some(and) = &self.and {
+      has_condition = true;
+      match_when_empty &= try_all(and, |i| async { i.match_when_empty().await }).await?;
+    }
+    if let Some(or) = &self.or {
+      has_condition = true;
+      match_when_empty &= try_any(or, |i| async { i.match_when_empty().await }).await?;
+    }
+    if let Some(not) = &self.not {
+      has_condition = true;
+      match_when_empty &= !not.match_when_empty().await?;
+    }
+    Ok(has_condition && match_when_empty)
+  }
 }
 
 pub struct FuncUseCtx {
   pub resource: Option<String>,
   pub real_resource: Option<String>,
   pub resource_query: Option<String>,
+  pub resource_fragment: Option<String>,
   pub issuer: Option<Box<str>>,
+  pub issuer_layer: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -645,7 +934,7 @@ pub struct ModuleRuleUseLoader {
 pub type FnUse =
   Box<dyn Fn(FuncUseCtx) -> BoxFuture<'static, Result<Vec<ModuleRuleUseLoader>>> + Sync + Send>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ModuleRule {
   /// A conditional match matching an absolute path + query + fragment.
   /// Note:
@@ -659,13 +948,13 @@ pub struct ModuleRule {
   /// A condition matcher matching an absolute path.
   pub resource: Option<RuleSetCondition>,
   /// A condition matcher against the resource query.
-  pub resource_query: Option<RuleSetCondition>,
-  pub resource_fragment: Option<RuleSetCondition>,
+  pub resource_query: Option<RuleSetConditionWithEmpty>,
+  pub resource_fragment: Option<RuleSetConditionWithEmpty>,
   pub dependency: Option<RuleSetCondition>,
-  pub issuer: Option<RuleSetCondition>,
-  pub issuer_layer: Option<RuleSetCondition>,
-  pub scheme: Option<RuleSetCondition>,
-  pub mimetype: Option<RuleSetCondition>,
+  pub issuer: Option<RuleSetConditionWithEmpty>,
+  pub issuer_layer: Option<RuleSetConditionWithEmpty>,
+  pub scheme: Option<RuleSetConditionWithEmpty>,
+  pub mimetype: Option<RuleSetConditionWithEmpty>,
   pub description_data: Option<DescriptionData>,
   pub with: Option<With>,
   pub one_of: Option<Vec<ModuleRule>>,
@@ -673,14 +962,12 @@ pub struct ModuleRule {
   pub effect: ModuleRuleEffect,
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug, Default)]
 pub struct ModuleRuleEffect {
   pub side_effects: Option<bool>,
   /// The `ModuleType` to use for the matched resource.
   pub r#type: Option<ModuleType>,
   pub layer: Option<String>,
-  #[derivative(Debug(format_with = "fmt_use"))]
   pub r#use: ModuleRuleUse,
   pub parser: Option<ParserOptions>,
   pub generator: Option<GeneratorOptions>,
@@ -699,21 +986,20 @@ impl Default for ModuleRuleUse {
   }
 }
 
-fn fmt_use(
-  r#use: &ModuleRuleUse,
-  f: &mut std::fmt::Formatter,
-) -> std::result::Result<(), std::fmt::Error> {
-  match r#use {
-    ModuleRuleUse::Array(array_use) => write!(
-      f,
-      "{}",
-      array_use
-        .iter()
-        .map(|l| &*l.loader)
-        .collect::<Vec<_>>()
-        .join("!")
-    ),
-    ModuleRuleUse::Func(_) => write!(f, "Fn(...)"),
+impl Debug for ModuleRuleUse {
+  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
+    match self {
+      ModuleRuleUse::Array(array_use) => write!(
+        f,
+        "{}",
+        array_use
+          .iter()
+          .map(|l| &*l.loader)
+          .collect::<Vec<_>>()
+          .join("!")
+      ),
+      ModuleRuleUse::Func(_) => write!(f, "Fn(...)"),
+    }
   }
 }
 
@@ -769,6 +1055,9 @@ pub enum ModuleRuleEnforce {
   Pre,
 }
 
+// BE CAREFUL:
+// Add more fields to this struct should result in adding new fields to options builder.
+// `impl From<ModuleOptions> for ModuleOptionsBuilder` should be updated.
 #[derive(Debug, Default)]
 pub struct ModuleOptions {
   pub rules: Vec<ModuleRule>,

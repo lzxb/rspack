@@ -1,17 +1,12 @@
-use std::{
-  fmt,
-  hash::{Hash, Hasher},
-};
+use std::fmt;
 
+use itertools::{Either, Itertools};
 use once_cell::sync::OnceCell;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rspack_collections::{IdentifierDashMap, IdentifierMap, IdentifierSet, UkeySet};
-use rspack_util::fx_hash::FxIndexSet;
-use rustc_hash::FxHasher;
+use rspack_collections::{IdentifierSet, UkeySet};
 
 use crate::{
-  AffectType, ChunkGraph, ChunkUkey, Compilation, Module, ModuleGraph, ModuleGraphConnection,
-  ModuleIdentifier,
+  AffectType, ChunkUkey, Compilation, ModuleGraph, ModuleGraphConnection, ModuleIdentifier,
 };
 
 #[derive(Debug, Default)]
@@ -19,8 +14,6 @@ pub struct Mutations {
   inner: Vec<Mutation>,
 
   affected_modules_with_module_graph: OnceCell<IdentifierSet>,
-  affected_modules_with_chunk_graph: OnceCell<IdentifierSet>,
-  modules_with_chunk_graph_cache: IdentifierDashMap<Option<u64>>,
   affected_chunks_with_chunk_graph: OnceCell<UkeySet<ChunkUkey>>,
 }
 
@@ -28,7 +21,7 @@ impl fmt::Display for Mutations {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     writeln!(f, "[")?;
     for mutation in self.iter() {
-      writeln!(f, "{},", mutation)?;
+      writeln!(f, "{mutation},")?;
     }
     writeln!(f, "]")
   }
@@ -36,9 +29,13 @@ impl fmt::Display for Mutations {
 
 #[derive(Debug)]
 pub enum Mutation {
-  ModuleBuild { module: ModuleIdentifier },
+  ModuleAdd { module: ModuleIdentifier },
+  ModuleUpdate { module: ModuleIdentifier },
   ModuleRemove { module: ModuleIdentifier },
   ModuleSetAsync { module: ModuleIdentifier },
+  ModuleSetId { module: ModuleIdentifier },
+  ModuleSetHashes { module: ModuleIdentifier },
+  ChunkSetId { chunk: ChunkUkey },
   ChunkAdd { chunk: ChunkUkey },
   ChunkSplit { from: ChunkUkey, to: ChunkUkey },
   ChunksIntegrate { to: ChunkUkey },
@@ -48,9 +45,13 @@ pub enum Mutation {
 impl fmt::Display for Mutation {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Mutation::ModuleBuild { module } => write!(f, "build module {}", module),
-      Mutation::ModuleRemove { module } => write!(f, "remove module {}", module),
-      Mutation::ModuleSetAsync { module } => write!(f, "set async module {}", module),
+      Mutation::ModuleAdd { module } => write!(f, "add module {module}"),
+      Mutation::ModuleUpdate { module } => write!(f, "update module {module}"),
+      Mutation::ModuleRemove { module } => write!(f, "remove module {module}"),
+      Mutation::ModuleSetAsync { module } => write!(f, "set async module {module}"),
+      Mutation::ModuleSetId { module } => write!(f, "set id module {module}"),
+      Mutation::ModuleSetHashes { module } => write!(f, "set hashes module {module}"),
+      Mutation::ChunkSetId { chunk } => write!(f, "set id chunk {}", chunk.as_u32()),
       Mutation::ChunkAdd { chunk } => write!(f, "add chunk {}", chunk.as_u32()),
       Mutation::ChunkSplit { from, to } => {
         write!(f, "split chunk {} to {}", from.as_u32(), to.as_u32())
@@ -64,6 +65,14 @@ impl fmt::Display for Mutation {
 impl Mutations {
   pub fn add(&mut self, mutation: Mutation) {
     self.inner.push(mutation);
+  }
+
+  pub fn len(&self) -> usize {
+    self.inner.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.inner.is_empty()
   }
 }
 
@@ -115,30 +124,11 @@ impl Mutations {
           self
             .iter()
             .filter_map(|mutation| match mutation {
-              Mutation::ModuleBuild { module } => Some(*module),
+              Mutation::ModuleAdd { module } => Some(*module),
+              Mutation::ModuleUpdate { module } => Some(*module),
               _ => None,
             })
             .collect(),
-        )
-      })
-      .clone()
-  }
-
-  pub fn get_affected_modules_with_chunk_graph(&self, compilation: &Compilation) -> IdentifierSet {
-    self
-      .affected_modules_with_chunk_graph
-      .get_or_init(|| {
-        compute_affected_modules_with_chunk_graph(
-          self.get_affected_modules_with_module_graph(&compilation.get_module_graph()),
-          self
-            .iter()
-            .filter_map(|mutation| match mutation {
-              Mutation::ModuleRemove { module } => Some(*module),
-              _ => None,
-            })
-            .collect(),
-          &self.modules_with_chunk_graph_cache,
-          compilation,
         )
       })
       .clone()
@@ -151,29 +141,28 @@ impl Mutations {
     self
       .affected_chunks_with_chunk_graph
       .get_or_init(|| {
-        compute_affected_chunks_with_chunk_graph(
-          self.get_affected_modules_with_chunk_graph(compilation),
-          self.iter().fold(UkeySet::default(), |mut acc, mutation| {
-            match mutation {
-              Mutation::ChunkAdd { chunk } => {
-                acc.insert(*chunk);
-              }
-              Mutation::ChunkSplit { from, to } => {
-                acc.insert(*from);
-                acc.insert(*to);
-              }
-              Mutation::ChunksIntegrate { to } => {
-                acc.insert(*to);
-              }
-              Mutation::ChunkRemove { chunk } => {
-                acc.remove(chunk);
-              }
-              _ => {}
-            };
-            acc
-          }),
-          &compilation.chunk_graph,
-        )
+        self.iter().fold(UkeySet::default(), |mut acc, mutation| {
+          match mutation {
+            Mutation::ModuleSetHashes { module } => {
+              acc.extend(compilation.chunk_graph.get_module_chunks(*module));
+            }
+            Mutation::ChunkAdd { chunk } => {
+              acc.insert(*chunk);
+            }
+            Mutation::ChunkSplit { from, to } => {
+              acc.insert(*from);
+              acc.insert(*to);
+            }
+            Mutation::ChunksIntegrate { to } => {
+              acc.insert(*to);
+            }
+            Mutation::ChunkRemove { chunk } => {
+              acc.remove(chunk);
+            }
+            _ => {}
+          };
+          acc
+        })
       })
       .clone()
   }
@@ -195,7 +184,7 @@ fn compute_affected_modules_with_module_graph(
       };
       match dependency.could_affect_referencing_module() {
         AffectType::True => affected = AffectType::True,
-        AffectType::False => continue,
+        AffectType::False => {}
         AffectType::Transitive => return AffectType::Transitive,
       }
     }
@@ -208,37 +197,35 @@ fn compute_affected_modules_with_module_graph(
   }
 
   let mut all_affected_modules: IdentifierSet = built_modules.clone();
-  let affected_modules_cache_iter = built_modules.par_iter().flat_map(|module_identifier| {
-    module_graph
-      .get_incoming_connections_by_origin_module(module_identifier)
-      .into_iter()
-      .filter_map(|(referencing_module, connections)| {
-        let referencing_module = referencing_module?;
-        if all_affected_modules.contains(&referencing_module) {
-          return None;
-        }
-        match reduce_affect_type(module_graph, &connections) {
-          AffectType::False => None,
-          AffectType::True => Some(AffectedModuleKind::Direct(referencing_module)),
-          AffectType::Transitive => Some(AffectedModuleKind::Transitive(referencing_module)),
-        }
-      })
-      .collect::<Vec<_>>()
-  });
-  let mut direct_affected_modules: IdentifierSet = affected_modules_cache_iter
-    .clone()
-    .filter_map(|k| match k {
-      AffectedModuleKind::Direct(m) => Some(m),
-      AffectedModuleKind::Transitive(_) => None,
+  let (mut direct_affected_modules, mut transitive_affected_modules): (
+    IdentifierSet,
+    IdentifierSet,
+  ) = built_modules
+    .par_iter()
+    .flat_map(|module_identifier| {
+      module_graph
+        .get_incoming_connections_by_origin_module(module_identifier)
+        .into_iter()
+        .filter_map(|(referencing_module, connections)| {
+          let referencing_module = referencing_module?;
+          if all_affected_modules.contains(&referencing_module) {
+            return None;
+          }
+          match reduce_affect_type(module_graph, &connections) {
+            AffectType::False => None,
+            AffectType::True => Some(AffectedModuleKind::Direct(referencing_module)),
+            AffectType::Transitive => Some(AffectedModuleKind::Transitive(referencing_module)),
+          }
+        })
+        .collect::<Vec<_>>()
     })
-    .collect();
-  let mut transitive_affected_modules: IdentifierSet = affected_modules_cache_iter
-    .clone()
-    .filter_map(|k| match k {
-      AffectedModuleKind::Transitive(m) => Some(m),
-      AffectedModuleKind::Direct(_) => None,
-    })
-    .collect();
+    .collect::<Vec<_>>()
+    .iter()
+    .partition_map(|reduce_type| match reduce_type {
+      AffectedModuleKind::Direct(m) => Either::Left(*m),
+      AffectedModuleKind::Transitive(m) => Either::Right(*m),
+    });
+
   while !transitive_affected_modules.is_empty() {
     let transitive_affected_modules_current = std::mem::take(&mut transitive_affected_modules);
     all_affected_modules.extend(transitive_affected_modules_current.iter().copied());
@@ -253,7 +240,7 @@ fn compute_affected_modules_with_module_graph(
           continue;
         }
         match reduce_affect_type(module_graph, &connections) {
-          AffectType::False => continue,
+          AffectType::False => {}
           AffectType::True => {
             direct_affected_modules.insert(referencing_module);
           }
@@ -266,100 +253,4 @@ fn compute_affected_modules_with_module_graph(
   }
   all_affected_modules.extend(direct_affected_modules);
   all_affected_modules
-}
-
-#[tracing::instrument(skip_all)]
-fn compute_affected_modules_with_chunk_graph(
-  updated_modules: IdentifierSet,
-  revoked_modules: IdentifierSet,
-  cache: &IdentifierDashMap<Option<u64>>,
-  compilation: &Compilation,
-) -> IdentifierSet {
-  #[tracing::instrument(skip_all, fields(module = ?module.identifier()))]
-  fn create_chunk_graph_invalidate_key(
-    chunk_graph: &ChunkGraph,
-    module_graph: &ModuleGraph,
-    compilation: &Compilation,
-    module: &dyn Module,
-  ) -> u64 {
-    let module_identifier = module.identifier();
-    let mut hasher = FxHasher::default();
-    chunk_graph
-      .get_module_id(module_identifier)
-      .hash(&mut hasher);
-    let module_ids: FxIndexSet<_> = module_graph
-      .get_ordered_connections(&module_identifier)
-      .expect("should have module")
-      .into_iter()
-      .filter_map(|dep_id| {
-        let connection = module_graph
-          .connection_by_dependency_id(dep_id)
-          .expect("should have connection");
-        chunk_graph.get_module_id(*connection.module_identifier())
-      })
-      .collect();
-    for module_id in module_ids {
-      module_id.hash(&mut hasher);
-    }
-    for block_id in module.get_blocks() {
-      let Some(chunk_group) =
-        chunk_graph.get_block_chunk_group(block_id, &compilation.chunk_group_by_ukey)
-      else {
-        continue;
-      };
-      for chunk in &chunk_group.chunks {
-        let chunk = compilation.chunk_by_ukey.expect_get(chunk);
-        chunk.id().hash(&mut hasher);
-      }
-    }
-    hasher.finish()
-  }
-
-  for module in revoked_modules {
-    cache.remove(&module);
-  }
-  for module in updated_modules {
-    cache.insert(module, None);
-  }
-
-  let module_graph = compilation.get_module_graph();
-  let affected_modules: IdentifierMap<u64> = cache
-    .par_iter()
-    .filter_map(|item| {
-      let (module_identifier, &old_invalidate_key) = item.pair();
-      let module = module_graph
-        .module_by_identifier(module_identifier)
-        .expect("should have module");
-      let invalidate_key = create_chunk_graph_invalidate_key(
-        &compilation.chunk_graph,
-        &module_graph,
-        compilation,
-        module.as_ref(),
-      );
-      if old_invalidate_key.is_none()
-        || matches!(old_invalidate_key, Some(old) if old != invalidate_key)
-      {
-        Some((*module_identifier, invalidate_key))
-      } else {
-        None
-      }
-    })
-    .collect();
-  for (&module_identifier, &invalidate_key) in affected_modules.iter() {
-    cache.insert(module_identifier, Some(invalidate_key));
-  }
-  affected_modules.keys().copied().collect()
-}
-
-fn compute_affected_chunks_with_chunk_graph(
-  updated_modules: IdentifierSet,
-  mut updated_chunks: UkeySet<ChunkUkey>,
-  chunk_graph: &ChunkGraph,
-) -> UkeySet<ChunkUkey> {
-  updated_chunks.extend(
-    updated_modules
-      .into_iter()
-      .flat_map(|m| chunk_graph.get_module_chunks(m).iter().copied()),
-  );
-  updated_chunks
 }

@@ -4,10 +4,11 @@ pub mod persistent;
 
 use std::{fmt::Debug, sync::Arc};
 
-use rspack_fs::FileSystem;
+use rspack_error::Result;
+use rspack_fs::{IntermediateFileSystem, ReadableFileSystem};
 
-use self::{disable::DisableCache, memory::MemoryCache, persistent::PersistentCache};
-use crate::{Compilation, CompilerOptions, ExperimentCacheOptions};
+pub use self::{disable::DisableCache, memory::MemoryCache, persistent::PersistentCache};
+use crate::{make::MakeArtifact, Compilation, CompilerOptions, ExperimentCacheOptions};
 
 /// Cache trait
 ///
@@ -21,15 +22,38 @@ use crate::{Compilation, CompilerOptions, ExperimentCacheOptions};
 /// * This API does not need to cooperate with the js side.
 ///
 /// We can consider change to Hook when we need to open the API to js side.
+#[async_trait::async_trait]
 pub trait Cache: Debug + Send + Sync {
-  fn before_compile(&self, _compilation: &mut Compilation) {}
-  fn after_compile(&self, _compilation: &Compilation) {}
+  async fn before_compile(&self, _compilation: &mut Compilation) -> Result<()> {
+    Ok(())
+  }
+  async fn after_compile(&self, _compilation: &Compilation) -> Result<()> {
+    Ok(())
+  }
+
+  async fn before_make(&self, _make_artifact: &mut MakeArtifact) -> Result<()> {
+    Ok(())
+  }
+  async fn after_make(&self, _make_artifact: &MakeArtifact) -> Result<()> {
+    Ok(())
+  }
 }
 
-pub fn new_cache(compiler_option: Arc<CompilerOptions>, fs: Arc<dyn FileSystem>) -> Arc<dyn Cache> {
+pub fn new_cache(
+  compiler_path: &str,
+  compiler_option: Arc<CompilerOptions>,
+  input_filesystem: Arc<dyn ReadableFileSystem>,
+  intermediate_filesystem: Arc<dyn IntermediateFileSystem>,
+) -> Arc<dyn Cache> {
   match &compiler_option.experiments.cache {
     ExperimentCacheOptions::Disabled => Arc::new(DisableCache),
     ExperimentCacheOptions::Memory => Arc::new(MemoryCache),
-    ExperimentCacheOptions::Persistent(option) => Arc::new(PersistentCache::new(option, fs)),
+    ExperimentCacheOptions::Persistent(option) => Arc::new(PersistentCache::new(
+      compiler_path,
+      option,
+      compiler_option.clone(),
+      input_filesystem,
+      intermediate_filesystem,
+    )),
   }
 }

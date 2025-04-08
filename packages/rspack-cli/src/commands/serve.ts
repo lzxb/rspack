@@ -1,12 +1,14 @@
-import type { Compiler, DevServer } from "@rspack/core";
+import { type Compiler, type DevServer, rspack } from "@rspack/core";
 import type { RspackDevServer as RspackDevServerType } from "@rspack/dev-server";
 
 import type { RspackCLI } from "../cli";
 import type { RspackCommand } from "../types";
 import {
 	commonOptions,
+	commonOptionsForBuildAndServe,
 	ensureEnvObject,
-	setBuiltinEnvArg
+	setBuiltinEnvArg,
+	setDefaultNodeEnv
 } from "../utils/options";
 
 export class ServeCommand implements RspackCommand {
@@ -15,7 +17,7 @@ export class ServeCommand implements RspackCommand {
 			["serve", "server", "s", "dev"],
 			"run the rspack dev server.",
 			yargs =>
-				commonOptions(yargs).options({
+				commonOptionsForBuildAndServe(commonOptions(yargs)).options({
 					hot: {
 						coerce: arg => {
 							if (typeof arg === "boolean" || arg === "only") {
@@ -39,7 +41,9 @@ export class ServeCommand implements RspackCommand {
 					}
 				}),
 			async options => {
+				setDefaultNodeEnv(options, "development");
 				setBuiltinEnvArg(ensureEnvObject(options), "SERVE", true);
+
 				const rspackOptions = {
 					...options,
 					argv: {
@@ -100,6 +104,26 @@ export class ServeCommand implements RspackCommand {
 				}
 
 				const result = (compilerForDevServer.options.devServer ??= {});
+
+				if (compilerForDevServer.options.experiments.lazyCompilation) {
+					const options =
+						compilerForDevServer.options.experiments.lazyCompilation;
+
+					const setupMiddlewares = result.setupMiddlewares;
+					const lazyCompileMiddleware =
+						rspack.experiments.lazyCompilationMiddleware(
+							compilerForDevServer,
+							options
+						);
+					result.setupMiddlewares = (middlewares, server) => {
+						let finalMiddlewares = middlewares;
+						if (setupMiddlewares) {
+							finalMiddlewares = setupMiddlewares(finalMiddlewares, server);
+						}
+						return [lazyCompileMiddleware, ...finalMiddlewares];
+					};
+				}
+
 				/**
 				 * Enable this to tell Rspack that we need to enable React Refresh by default
 				 */

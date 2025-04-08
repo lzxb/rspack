@@ -1,8 +1,7 @@
-use cow_utils::CowUtils;
 use rspack_collections::{DatabaseItem, Identifier};
 use rspack_core::{
   compile_boolean_matcher, impl_runtime_module,
-  rspack_sources::{BoxSource, ConcatSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt},
   BooleanMatcher, Chunk, ChunkUkey, Compilation, RuntimeGlobals, RuntimeModule, RuntimeModuleStage,
 };
 
@@ -32,7 +31,7 @@ impl ImportScriptsChunkLoadingRuntimeModule {
     )
   }
 
-  fn generate_base_uri(
+  async fn generate_base_uri(
     &self,
     chunk: &Chunk,
     compilation: &Compilation,
@@ -44,7 +43,7 @@ impl ImportScriptsChunkLoadingRuntimeModule {
     {
       base_uri
     } else {
-      let root_output_dir = get_output_dir(chunk, compilation, false)?;
+      let root_output_dir = get_output_dir(chunk, compilation, false).await?;
       format!(
         "self.location + {}",
         serde_json::to_string(&if root_output_dir.is_empty() {
@@ -55,16 +54,50 @@ impl ImportScriptsChunkLoadingRuntimeModule {
         .expect("should able to be serde_json::to_string")
       )
     };
-    Ok(RawSource::from(format!("{} = {};\n", RuntimeGlobals::BASE_URI, base_uri)).boxed())
+    Ok(RawStringSource::from(format!("{} = {};\n", RuntimeGlobals::BASE_URI, base_uri)).boxed())
+  }
+
+  fn template_id(&self, id: TemplateId) -> String {
+    let base_id = self.id.as_str();
+
+    match id {
+      TemplateId::Raw => base_id.to_string(),
+      TemplateId::WithHmr => format!("{}_with_hmr", base_id),
+      TemplateId::WithHmrManifest => format!("{}_with_hmr_manifest", base_id),
+    }
   }
 }
 
+enum TemplateId {
+  Raw,
+  WithHmr,
+  WithHmrManifest,
+}
+
+#[async_trait::async_trait]
 impl RuntimeModule for ImportScriptsChunkLoadingRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
   }
 
-  fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+  fn template(&self) -> Vec<(String, String)> {
+    vec![
+      (
+        self.template_id(TemplateId::Raw),
+        include_str!("runtime/import_scripts_chunk_loading.ejs").to_string(),
+      ),
+      (
+        self.template_id(TemplateId::WithHmr),
+        include_str!("runtime/import_scripts_chunk_loading_with_hmr.ejs").to_string(),
+      ),
+      (
+        self.template_id(TemplateId::WithHmrManifest),
+        include_str!("runtime/import_scripts_chunk_loading_with_hmr_manifest.ejs").to_string(),
+      ),
+    ]
+  }
+
+  async fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
     let chunk = compilation
       .chunk_by_ukey
       .expect_get(&self.chunk.expect("The chunk should be attached."));
@@ -86,21 +119,21 @@ impl RuntimeModule for ImportScriptsChunkLoadingRuntimeModule {
     let mut source = ConcatSource::default();
 
     if with_base_uri {
-      source.add(self.generate_base_uri(chunk, compilation)?);
+      source.add(self.generate_base_uri(chunk, compilation).await?);
     }
 
     // object to store loaded chunks
     // "1" means "already loaded"
     if with_hmr {
       let state_expression = format!("{}_importScripts", RuntimeGlobals::HMR_RUNTIME_STATE_PREFIX);
-      source.add(RawSource::from(format!(
+      source.add(RawStringSource::from(format!(
         "var installedChunks = {} = {} || {};\n",
         state_expression,
         state_expression,
         &stringify_chunks(&initial_chunks, 1)
       )));
     } else {
-      source.add(RawSource::from(format!(
+      source.add(RawStringSource::from(format!(
         "var installedChunks = {};\n",
         &stringify_chunks(&initial_chunks, 1)
       )));
@@ -143,13 +176,16 @@ impl RuntimeModule for ImportScriptsChunkLoadingRuntimeModule {
         )
       };
 
+      let render_source = compilation.runtime_template.render(
+        &self.template_id(TemplateId::Raw),
+        Some(serde_json::json!({
+          "_body": body,
+          "_chunk_loading_global_expr": chunk_loading_global_expr,
+        })),
+      )?;
+
       // If chunkId not corresponding chunkName will skip load it.
-      source.add(RawSource::from(
-        include_str!("runtime/import_scripts_chunk_loading.js")
-          .cow_replace("$BODY$", body.as_str())
-          .cow_replace("$CHUNK_LOADING_GLOBAL_EXPR$", &chunk_loading_global_expr)
-          .into_owned(),
-      ));
+      source.add(RawStringSource::from(render_source));
     }
 
     if with_hmr {
@@ -167,27 +203,26 @@ impl RuntimeModule for ImportScriptsChunkLoadingRuntimeModule {
           RuntimeGlobals::GET_CHUNK_UPDATE_SCRIPT_FILENAME
         )
       };
-      source.add(RawSource::from(
-        include_str!("runtime/import_scripts_chunk_loading_with_hmr.js")
-          .cow_replace("$URL$", &url)
-          .cow_replace("$globalObject$", &compilation.options.output.global_object)
-          .cow_replace(
-            "$hotUpdateGlobal$",
-            &serde_json::to_string(&compilation.options.output.hot_update_global)
-              .expect("failed to serde_json::to_string(hot_update_global)"),
-          )
-          .into_owned(),
-      ));
-      source.add(RawSource::from(generate_javascript_hmr_runtime(
+
+      let source_with_hmr = compilation.runtime_template.render(&self.template_id(TemplateId::WithHmr), Some(serde_json::json!({
+        "_url": &url,
+        "_global_object": &compilation.options.output.global_object.as_str(),
+        "_hot_update_global": &serde_json::to_string(&compilation.options.output.hot_update_global).expect("failed to serde_json::to_string(hot_update_global)"),
+      })))?;
+
+      source.add(RawStringSource::from(source_with_hmr));
+      source.add(RawStringSource::from(generate_javascript_hmr_runtime(
         "importScripts",
       )));
     }
 
     if with_hmr_manifest {
       // TODO: import_scripts_chunk_loading_with_hmr_manifest same as jsonp_chunk_loading_with_hmr_manifest
-      source.add(RawSource::from(include_str!(
-        "runtime/import_scripts_chunk_loading_with_hmr_manifest.js"
-      )));
+      let source_with_hmr_manifest = compilation
+        .runtime_template
+        .render(&self.template_id(TemplateId::WithHmrManifest), None)?;
+
+      source.add(RawStringSource::from(source_with_hmr_manifest));
     }
 
     Ok(source.boxed())

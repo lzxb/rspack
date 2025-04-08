@@ -1,12 +1,11 @@
-use std::collections::BTreeSet;
-use std::sync::LazyLock;
+use std::{collections::BTreeSet, sync::LazyLock};
 
 use regex::Regex;
 use rustc_hash::FxHashMap as HashMap;
 
 pub enum BooleanMatcher {
   Condition(bool),
-  Matcher(Box<dyn Fn(String) -> String>),
+  Matcher(Box<dyn Fn(String) -> String + Send + Sync + 'static>),
 }
 
 impl BooleanMatcher {
@@ -19,10 +18,7 @@ impl BooleanMatcher {
 }
 
 fn to_simple_string(input: &str) -> String {
-  if input
-    .parse::<f64>()
-    .map_or(false, |n| input == n.to_string())
-  {
+  if input.parse::<f64>().is_ok_and(|n| input == n.to_string()) {
     input.to_string()
   } else {
     serde_json::to_string(input).unwrap_or_default()
@@ -39,21 +35,21 @@ pub fn compile_boolean_matcher_from_lists(
     BooleanMatcher::Matcher(Box::new(|_| "true".to_string()))
   } else if positive_items.len() == 1 {
     let item = to_simple_string(&positive_items[0]);
-    BooleanMatcher::Matcher(Box::new(move |value| format!("{} == {}", item, value)))
+    BooleanMatcher::Matcher(Box::new(move |value| format!("{item} == {value}")))
   } else if negative_items.len() == 1 {
     let item = to_simple_string(&negative_items[0]);
-    BooleanMatcher::Matcher(Box::new(move |value| format!("{} != {}", item, value)))
+    BooleanMatcher::Matcher(Box::new(move |value| format!("{item} != {value}")))
   } else {
     let positive_regexp = items_to_regexp(positive_items);
     let negative_regexp = items_to_regexp(negative_items);
 
     if positive_regexp.len() <= negative_regexp.len() {
       BooleanMatcher::Matcher(Box::new(move |value| {
-        format!("/^{}$/.test({})", positive_regexp, value)
+        format!("/^{positive_regexp}$/.test({value})")
       }))
     } else {
       BooleanMatcher::Matcher(Box::new(move |value| {
-        format!("!/^{}$/.test({})", negative_regexp, value)
+        format!("!/^{negative_regexp}$/.test({value})")
       }))
     }
   }

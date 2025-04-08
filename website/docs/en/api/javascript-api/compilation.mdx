@@ -28,7 +28,7 @@ In Rspack, the real compilation object runs on the Rust side, and the JavaScript
 Therefore, some complex data structures and methods will not be supported on the JavaScript compilation object, the data is **read-only** and the structure may differ from webpack.
 :::
 
-## Compilation Methods
+## Compilation methods
 
 ### emitAsset
 
@@ -426,8 +426,8 @@ addRuntimeModule(
 
 The following code will add a runtime module which define `__webpack_require__.mock` to the `"main"` chunk:
 
-```js title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: './index.js',
   plugins: [
     {
@@ -479,7 +479,7 @@ Triggers a re-build of the module.
 ```ts
 rebuildModule(
   m: Module, // module to be rebuilt
-  f: (err: Error, m: Module) => void //  function to be invoked when the module finishes rebuilding
+  f: (err: Error | null, m: Module | null) => void //  function to be invoked when the module finishes rebuilding
 ): void;
 ```
 
@@ -555,7 +555,7 @@ getCache(name: string): CacheFacade;
   </CollapsePanel>
 </Collapse>
 
-## Compilation Properties
+## Compilation properties
 
 ### options
 

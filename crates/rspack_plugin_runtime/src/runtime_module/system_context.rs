@@ -1,7 +1,7 @@
 use rspack_collections::Identifier;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   Compilation, RuntimeGlobals, RuntimeModule,
 };
 
@@ -17,14 +17,15 @@ impl Default for SystemContextRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for SystemContextRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
   }
 
-  fn generate(&self, _compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+  async fn generate(&self, _compilation: &Compilation) -> rspack_error::Result<BoxSource> {
     Ok(
-      RawSource::from(format!(
+      RawStringSource::from(format!(
         "{} = __system_context__",
         RuntimeGlobals::SYSTEM_CONTEXT
       ))

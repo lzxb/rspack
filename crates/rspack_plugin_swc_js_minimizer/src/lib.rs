@@ -2,31 +2,36 @@
 
 mod minify;
 
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::path::Path;
-use std::sync::{mpsc, LazyLock, Mutex};
+use std::{
+  collections::HashMap,
+  hash::Hash,
+  path::Path,
+  sync::{mpsc, LazyLock, Mutex},
+};
 
 use cow_utils::CowUtils;
 use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use regex::Regex;
-use rspack_core::rspack_sources::{ConcatSource, MapOptions, RawSource, SourceExt};
-use rspack_core::rspack_sources::{Source, SourceMapSource, SourceMapSourceOptions};
 use rspack_core::{
+  rspack_sources::{
+    ConcatSource, MapOptions, RawStringSource, Source, SourceExt, SourceMapSource,
+    SourceMapSourceOptions,
+  },
   AssetInfo, ChunkUkey, Compilation, CompilationAsset, CompilationParams, CompilationProcessAssets,
   CompilerCompilation, Plugin, PluginContext,
 };
-use rspack_error::miette::IntoDiagnostic;
-use rspack_error::{Diagnostic, Result};
+use rspack_error::{miette::IntoDiagnostic, Diagnostic, Result};
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_plugin_javascript::{JavascriptModulesChunkHash, JsPlugin};
 use rspack_util::asset_condition::AssetConditions;
 use swc_config::config_types::BoolOrDataConfig;
 use swc_core::base::config::JsMinifyFormatOptions;
-pub use swc_ecma_minifier::option::terser::{TerserCompressorOptions, TerserEcmaVersion};
-pub use swc_ecma_minifier::option::MangleOptions;
+pub use swc_ecma_minifier::option::{
+  terser::{TerserCompressorOptions, TerserEcmaVersion},
+  MangleOptions,
+};
 
 use self::minify::{match_object, minify};
 
@@ -132,7 +137,7 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   Ok(())
 }
@@ -252,7 +257,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
           })
           .boxed()
         } else {
-          RawSource::from(output.code).boxed()
+          RawStringSource::from(output.code).boxed()
         };
         let source = if let Some(Some(banner)) = extract_comments_option.map(|option| option.banner)
           && all_extracted_comments
@@ -261,8 +266,8 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
           .contains_key(filename)
         {
           ConcatSource::new([
-            RawSource::from(banner).boxed(),
-            RawSource::from("\n").boxed(),
+            RawStringSource::from(banner).boxed(),
+            RawStringSource::from_static("\n").boxed(),
             source
           ]).boxed()
         } else {

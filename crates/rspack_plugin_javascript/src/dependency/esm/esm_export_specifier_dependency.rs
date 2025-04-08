@@ -1,39 +1,55 @@
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsPreset, Skip},
+};
 use rspack_collections::IdentifierSet;
 use rspack_core::{
-  AsContextDependency, AsModuleDependency, Compilation, Dependency, DependencyCategory,
-  DependencyId, DependencyRange, DependencyTemplate, DependencyType, ESMExportInitFragment,
-  ExportNameOrSpec, ExportsOfExportsSpec, ExportsSpec, ModuleGraph, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource, UsedName,
+  AsContextDependency, AsModuleDependency, Dependency, DependencyCategory, DependencyId,
+  DependencyLocation, DependencyRange, DependencyTemplate, DependencyType, ESMExportInitFragment,
+  ExportNameOrSpec, ExportsOfExportsSpec, ExportsSpec, ModuleGraph, SharedSourceMap,
+  TemplateContext, TemplateReplaceSource, UsedName,
 };
 use swc_core::ecma::atoms::Atom;
 
 // Create _webpack_require__.d(__webpack_exports__, {}) for each export.
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMExportSpecifierDependency {
   id: DependencyId,
   range: DependencyRange,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
+  #[cacheable(with=AsPreset)]
   pub name: Atom,
+  #[cacheable(with=AsPreset)]
   pub value: Atom, // id
 }
 
 impl ESMExportSpecifierDependency {
-  pub fn new(name: Atom, value: Atom, range: DependencyRange) -> Self {
+  pub fn new(
+    name: Atom,
+    value: Atom,
+    range: DependencyRange,
+    source_map: Option<SharedSourceMap>,
+  ) -> Self {
     Self {
       name,
       value,
       range,
+      source_map,
       id: DependencyId::new(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ESMExportSpecifierDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn category(&self) -> &DependencyCategory {
@@ -72,6 +88,7 @@ impl Dependency for ESMExportSpecifierDependency {
 
 impl AsModuleDependency for ESMExportSpecifierDependency {}
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMExportSpecifierDependency {
   fn apply(
     &self,
@@ -114,18 +131,6 @@ impl DependencyTemplate for ESMExportSpecifierDependency {
         vec![(used_name, self.value.clone())],
       )));
     }
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

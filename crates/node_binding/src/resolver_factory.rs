@@ -2,27 +2,27 @@ use std::sync::Arc;
 
 use napi_derive::napi;
 use rspack_core::{Resolve, ResolverFactory};
-use rspack_fs::{FileSystem, NativeFileSystem};
+use rspack_fs::{NativeFileSystem, ReadableFileSystem};
 
 use crate::{
   raw_resolve::{
     normalize_raw_resolve_options_with_dependency_type, RawResolveOptionsWithDependencyType,
   },
-  JsResolver,
+  JsResolver, RspackResultToNapiResultExt,
 };
 
 #[napi]
 pub struct JsResolverFactory {
   pub(crate) resolver_factory: Option<Arc<ResolverFactory>>,
   pub(crate) loader_resolver_factory: Option<Arc<ResolverFactory>>,
-  pub(crate) input_filesystem: Arc<dyn FileSystem>,
+  pub(crate) input_filesystem: Arc<dyn ReadableFileSystem>,
 }
 
 #[napi]
 impl JsResolverFactory {
   #[napi(constructor)]
-  pub fn new() -> napi::Result<Self> {
-    let input_filesystem = Arc::new(NativeFileSystem {});
+  pub fn new(pnp: bool) -> napi::Result<Self> {
+    let input_filesystem = Arc::new(NativeFileSystem::new(pnp));
     Ok(Self {
       resolver_factory: None,
       loader_resolver_factory: None,
@@ -67,17 +67,17 @@ impl JsResolverFactory {
   ) -> napi::Result<JsResolver> {
     match r#type.as_str() {
       "normal" => {
-        let options = normalize_raw_resolve_options_with_dependency_type(raw, false).map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        let options = normalize_raw_resolve_options_with_dependency_type(raw, false).to_napi_result()?;
         let resolver_factory = self.get_resolver_factory(*options.resolve_options.clone().unwrap_or_default());
         Ok(JsResolver::new(resolver_factory, options))
       }
       "loader" => {
-        let options = normalize_raw_resolve_options_with_dependency_type(raw, false).map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        let options = normalize_raw_resolve_options_with_dependency_type(raw, false).to_napi_result()?;
         let resolver_factory = self.get_loader_resolver_factory(*options.resolve_options.clone().unwrap_or_default());
         Ok(JsResolver::new(resolver_factory, options))
       }
       "context" => {
-        let options = normalize_raw_resolve_options_with_dependency_type(raw, true).map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        let options = normalize_raw_resolve_options_with_dependency_type(raw, true).to_napi_result()?;
         let resolver_factory = self.get_resolver_factory(*options.resolve_options.clone().unwrap_or_default());
         Ok(JsResolver::new(resolver_factory, options))
       }

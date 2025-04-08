@@ -1,4 +1,4 @@
-const rspack = require("@rspack/core");
+const { rspack } = require("@rspack/core");
 /**
  * @type {import("@rspack/core").Configuration}
  */
@@ -8,4 +8,4 @@ module.exports = {
 			"typeof window": JSON.stringify("undefined")
 		})
 	]
-}
+};

@@ -1,9 +1,10 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  block_promise, AffectType, AsContextDependency, AsModuleDependency, Compilation, Dependency,
+  block_promise, AffectType, AsContextDependency, AsModuleDependency, Dependency,
   DependencyCategory, DependencyId, DependencyTemplate, DependencyType, RuntimeGlobals,
-  RuntimeSpec,
 };
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct AMDRequireDependency {
   id: DependencyId,
@@ -37,6 +38,7 @@ impl AMDRequireDependency {
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for AMDRequireDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -55,6 +57,7 @@ impl Dependency for AMDRequireDependency {
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for AMDRequireDependency {
   fn apply(
     &self,
@@ -77,7 +80,7 @@ impl DependencyTemplate for AMDRequireDependency {
     {
       let start_block = promise + ".then(function() {";
       let end_block = format!(
-        ";}})['catch']{}",
+        ";}})['catch']({})",
         RuntimeGlobals::UNCAUGHT_ERROR_HANDLER.name()
       );
       code_generatable_context
@@ -179,18 +182,6 @@ impl DependencyTemplate for AMDRequireDependency {
 
       source.replace(function_range.1, self.outer_range.1, &end_block, None);
     };
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

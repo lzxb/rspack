@@ -1,13 +1,15 @@
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_core::{
-  AffectType, AsContextDependency, AsModuleDependency, Compilation, Dependency, DependencyCategory,
-  DependencyId, DependencyTemplate, DependencyType, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource,
+  AffectType, AsContextDependency, AsModuleDependency, Dependency, DependencyCategory,
+  DependencyId, DependencyTemplate, DependencyType, TemplateContext, TemplateReplaceSource,
 };
 use rspack_util::atom::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct UnsupportedDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
   range: (u32, u32),
 }
@@ -22,6 +24,7 @@ impl UnsupportedDependency {
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for UnsupportedDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -40,6 +43,7 @@ impl Dependency for UnsupportedDependency {
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for UnsupportedDependency {
   fn apply(
     &self,
@@ -51,18 +55,6 @@ impl DependencyTemplate for UnsupportedDependency {
       self.request
     );
     source.replace(self.range.0, self.range.1, &content, None);
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

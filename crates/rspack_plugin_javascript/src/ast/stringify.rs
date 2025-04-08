@@ -3,13 +3,10 @@ use std::sync::Arc;
 use rspack_ast::javascript::Ast;
 use rspack_core::rspack_sources::{self, encode_mappings, Mapping, OriginalLocation};
 use rspack_error::{miette::IntoDiagnostic, Result};
-use swc_core::base::config::JsMinifyFormatOptions;
-use swc_core::base::sourcemap;
+use rustc_hash::FxHashMap;
 use swc_core::{
-  common::{
-    collections::AHashMap, comments::Comments, source_map::SourceMapGenConfig, BytePos, FileName,
-    SourceMap,
-  },
+  base::{config::JsMinifyFormatOptions, sourcemap},
+  common::{comments::Comments, source_map::SourceMapGenConfig, BytePos, FileName, SourceMap},
   ecma::{
     ast::{EsVersion, Program as SwcProgram},
     atoms::Atom,
@@ -128,22 +125,25 @@ pub fn print(
       },
     }));
 
-    Some(rspack_sources::SourceMap::new(
-      combined_source_map.get_file().map(|file| file.to_string()),
+    let mut rspack_source_map = rspack_sources::SourceMap::new(
       mappings,
       combined_source_map
         .sources()
-        .map(|source| source.to_string().into())
+        .map(ToString::to_string)
         .collect::<Vec<_>>(),
       combined_source_map
         .source_contents()
-        .map(|source| source.unwrap_or_default().to_string().into())
+        .map(Option::unwrap_or_default)
+        .map(ToString::to_string)
         .collect::<Vec<_>>(),
       combined_source_map
         .names()
-        .map(|source| source.to_string().into())
+        .map(ToString::to_string)
         .collect::<Vec<_>>(),
-    ))
+    );
+    rspack_source_map.set_file(combined_source_map.get_file().map(ToString::to_string));
+
+    Some(rspack_source_map)
   } else {
     None
   };
@@ -155,7 +155,7 @@ pub struct SourceMapConfig {
   pub enable: bool,
   pub inline_sources_content: bool,
   pub emit_columns: bool,
-  pub names: AHashMap<BytePos, Atom>,
+  pub names: FxHashMap<BytePos, Atom>,
 }
 
 impl SourceMapGenConfig for SourceMapConfig {

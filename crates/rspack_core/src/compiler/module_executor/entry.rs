@@ -22,6 +22,7 @@ impl Task<MakeTaskContext> for EntryTask {
 
     module_graph.add_dependency(dep.clone());
     Ok(vec![Box::new(FactorizeTask {
+      compiler_id: context.compiler_id,
       compilation_id: context.compilation_id,
       module_factory: context
         .dependency_factories
@@ -45,6 +46,7 @@ impl Task<MakeTaskContext> for EntryTask {
         .compiler_options
         .profile
         .then(Box::<ModuleProfile>::default),
+      resolver_factory: context.resolver_factory.clone(),
     })])
   }
 }

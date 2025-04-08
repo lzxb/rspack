@@ -6,8 +6,7 @@
     "**/CVS": true,
     "**/.DS_Store": true,
     "**/*.bk": true,
-    "/target": true,
-    "**/.yarn": true
+    "/target": true
   },
   "[typescript]": {
     "editor.formatOnSave": true
@@ -20,9 +19,7 @@
   "rust-analyzer.procMacro.enable": true,
   "rust-analyzer.procMacro.attributes.enable": true,
   "rust-analyzer.linkedProjects": [
-    "Cargo.toml",
-    "crates/node_binding/Cargo.toml",
-    "./crates/rspack_plugin_ensure_chunk_conditions/Cargo.toml"
+    "Cargo.toml"
   ],
   "files.associations": {
     "*.snap": "markdown",

@@ -1,21 +1,22 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::{borrow::Cow, hash::Hash};
+use std::{borrow::Cow, hash::Hash, sync::Arc};
 
 use cow_utils::CowUtils;
-use derivative::Derivative;
+use derive_more::Debug;
 use indoc::formatdoc;
 use itertools::Itertools;
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsOption, AsPreset, AsVec, Unsupported},
+};
 use rspack_collections::{Identifiable, Identifier};
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_macros::impl_source_map_config;
-use rspack_paths::Utf8PathBuf;
+use rspack_paths::{ArcPath, Utf8PathBuf};
 use rspack_regex::RspackRegex;
-use rspack_sources::{BoxSource, ConcatSource, RawSource, SourceExt};
-use rspack_util::itoa;
-use rspack_util::{fx_hash::FxIndexMap, json_stringify, source_map::SourceMapKind};
-use rustc_hash::FxHashMap as HashMap;
-use rustc_hash::FxHashSet as HashSet;
+use rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt};
+use rspack_util::{fx_hash::FxIndexMap, itoa, json_stringify, source_map::SourceMapKind};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use swc_core::atoms::Atom;
 
 use crate::{
@@ -25,14 +26,15 @@ use crate::{
   BuildMetaDefaultObject, BuildMetaExportsType, BuildResult, ChunkGraph, ChunkGroupOptions,
   CodeGenerationResult, Compilation, ConcatenationScope, ContextElementDependency,
   DependenciesBlock, Dependency, DependencyCategory, DependencyId, DependencyLocation,
-  DependencyRange, DynamicImportMode, ExportsType, FactoryMeta, FakeNamespaceObjectMode,
-  GroupOptions, ImportAttributes, LibIdentOptions, Module, ModuleLayer, ModuleType, Resolve,
-  RuntimeGlobals, RuntimeSpec, SourceType,
+  DynamicImportMode, ExportsType, FactoryMeta, FakeNamespaceObjectMode, GroupOptions,
+  ImportAttributes, LibIdentOptions, Module, ModuleId, ModuleIdsArtifact, ModuleLayer, ModuleType,
+  RealDependencyLocation, Resolve, RuntimeGlobals, RuntimeSpec, SourceType,
 };
 
 static WEBPACK_CHUNK_NAME_INDEX_PLACEHOLDER: &str = "[index]";
 static WEBPACK_CHUNK_NAME_REQUEST_PLACEHOLDER: &str = "[request]";
 
+#[cacheable]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum ContextMode {
   Sync,
@@ -90,6 +92,7 @@ pub fn try_convert_str_to_context_mode(s: &str) -> Option<ContextMode> {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ContextNameSpaceObject {
   Bool(bool),
@@ -104,12 +107,14 @@ impl ContextNameSpaceObject {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, Hash, PartialEq, PartialOrd, Ord, Eq)]
 pub enum ContextTypePrefix {
   Import,
   Normal,
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ContextOptions {
   pub mode: ContextMode,
@@ -125,19 +130,22 @@ pub struct ContextOptions {
   pub replaces: Vec<(String, u32, u32)>,
   pub start: u32,
   pub end: u32,
+  #[cacheable(with=AsOption<AsVec<AsPreset>>)]
   pub referenced_exports: Option<Vec<Atom>>,
   pub attributes: Option<ImportAttributes>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ContextModuleOptions {
   pub addon: String,
+  #[cacheable(with=AsPreset)]
   pub resource: Utf8PathBuf,
   pub resource_query: String,
   pub resource_fragment: String,
   pub context_options: ContextOptions,
   pub layer: Option<ModuleLayer>,
-  pub resolve_options: Option<Box<Resolve>>,
+  pub resolve_options: Option<Arc<Resolve>>,
   pub type_prefix: ContextTypePrefix,
 }
 
@@ -151,17 +159,18 @@ pub type ResolveContextModuleDependencies =
   Arc<dyn Fn(ContextModuleOptions) -> Result<Vec<ContextElementDependency>> + Send + Sync>;
 
 #[impl_source_map_config]
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[cacheable]
+#[derive(Debug)]
 pub struct ContextModule {
   dependencies: Vec<DependencyId>,
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
   identifier: Identifier,
   options: ContextModuleOptions,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
-  #[derivative(Debug = "ignore")]
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
+  #[debug(skip)]
+  #[cacheable(with=Unsupported)]
   resolve_dependencies: ResolveContextModuleDependencies,
 }
 
@@ -176,18 +185,19 @@ impl ContextModule {
       identifier: create_identifier(&options),
       options,
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: Default::default(),
+      build_meta: BuildMeta {
+        exports_type: BuildMetaExportsType::Default,
+        default_object: BuildMetaDefaultObject::RedirectWarn { ignore: false },
+        ..Default::default()
+      },
       source_map_kind: SourceMapKind::empty(),
       resolve_dependencies,
     }
   }
 
-  pub fn id<'chunk_graph>(&self, chunk_graph: &'chunk_graph ChunkGraph) -> &'chunk_graph str {
-    chunk_graph
-      .get_module_id(self.identifier)
-      .as_ref()
-      .expect("module id not found")
+  pub fn get_module_id<'a>(&self, module_ids: &'a ModuleIdsArtifact) -> &'a ModuleId {
+    ChunkGraph::get_module_id(module_ids, self.identifier).expect("module id not found")
   }
 
   fn get_fake_map(
@@ -209,9 +219,7 @@ impl ContextModule {
           .map(|m| (m, dep_id))
       })
       .filter_map(|(m, dep)| {
-        compilation
-          .chunk_graph
-          .get_module_id(*m)
+        ChunkGraph::get_module_id(&compilation.module_ids_artifact, *m)
           .map(|id| (id.to_string(), dep))
       })
       .sorted_unstable_by_key(|(module_id, _)| module_id.to_string());
@@ -307,7 +315,7 @@ impl ContextModule {
         });
         let module_id = module_graph
           .module_identifier_by_dependency_id(dep_id)
-          .and_then(|module| compilation.chunk_graph.get_module_id(*module))
+          .and_then(|module| ChunkGraph::get_module_id(&compilation.module_ids_artifact, *module))
           .map(|s| s.to_string());
         // module_id could be None in weak mode
         dep.map(|dep| (dep, module_id))
@@ -317,7 +325,7 @@ impl ContextModule {
   }
 
   fn get_source_for_empty_async_context(&self, compilation: &Compilation) -> BoxSource {
-    RawSource::from(formatdoc! {r#"
+    RawStringSource::from(formatdoc! {r#"
       function webpackEmptyAsyncContext(req) {{
         // Here Promise.resolve().then() is used instead of new Promise() to prevent
         // uncaught exception popping up in devtools
@@ -333,13 +341,13 @@ impl ContextModule {
       module.exports = webpackEmptyAsyncContext;
       "#,
       keys = returning_function(&compilation.options.output.environment, "[]", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     })
     .boxed()
   }
 
   fn get_source_for_empty_context(&self, compilation: &Compilation) -> BoxSource {
-    RawSource::from(formatdoc! {r#"
+    RawStringSource::from(formatdoc! {r#"
       function webpackEmptyContext(req) {{
         var e = new Error("Cannot find module '" + req + "'");
         e.code = 'MODULE_NOT_FOUND';
@@ -351,7 +359,7 @@ impl ContextModule {
       module.exports = webpackEmptyContext;
       "#,
       keys = returning_function(&compilation.options.output.environment, "[]", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     })
     .boxed()
   }
@@ -436,6 +444,10 @@ impl ContextModule {
               has_multiple_or_no_chunks = true;
             }
             chunks
+          })
+          .or_else(|| {
+            has_multiple_or_no_chunks = true;
+            None
           });
         let user_request = compilation
           .get_module_graph()
@@ -448,7 +460,7 @@ impl ContextModule {
           })?;
         let module_id = module_graph
           .module_identifier_by_dependency_id(d)
-          .and_then(|m| compilation.chunk_graph.get_module_id(*m))?;
+          .and_then(|m| ChunkGraph::get_module_id(&compilation.module_ids_artifact, *m))?;
         Some((chunks, user_request, module_id.to_string()))
       })
       .collect::<Vec<_>>();
@@ -474,7 +486,7 @@ impl ContextModule {
               let chunk_id = compilation
                 .chunk_by_ukey
                 .expect_get(c)
-                .id()
+                .id(&compilation.chunk_ids_artifact)
                 .expect("should have chunk id in code generation");
               serde_json::json!(chunk_id)
             }))
@@ -547,7 +559,7 @@ impl ContextModule {
         RuntimeGlobals::HAS_OWN_PROPERTY,
       }
     };
-    source.add(RawSource::from(formatdoc! {r#"
+    source.add(RawStringSource::from(formatdoc! {r#"
       var map = {map};
       {webpack_async_context}
       webpackAsyncContext.keys = {keys};
@@ -556,7 +568,7 @@ impl ContextModule {
       "#,
       map = json_stringify(&map),
       keys = returning_function(&compilation.options.output.environment, "Object.keys(map)", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     }));
     source.boxed()
   }
@@ -618,9 +630,9 @@ impl ContextModule {
       fake_map_init_statement = self.get_fake_map_init_statement(&fake_map),
       has_own_property = RuntimeGlobals::HAS_OWN_PROPERTY,
       keys = returning_function(&compilation.options.output.environment, "Object.keys(map)", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     };
-    RawSource::from(source).boxed()
+    RawStringSource::from(source).boxed()
   }
 
   fn get_async_weak_source(&self, compilation: &Compilation) -> BoxSource {
@@ -664,9 +676,9 @@ impl ContextModule {
       module_factories = RuntimeGlobals::MODULE_FACTORIES,
       has_own_property = RuntimeGlobals::HAS_OWN_PROPERTY,
       keys = returning_function(&compilation.options.output.environment, "Object.keys(map)", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     };
-    RawSource::from(source).boxed()
+    RawStringSource::from(source).boxed()
   }
 
   fn get_sync_weak_source(&self, compilation: &Compilation) -> BoxSource {
@@ -705,9 +717,9 @@ impl ContextModule {
       module_factories = RuntimeGlobals::MODULE_FACTORIES,
       has_own_property = RuntimeGlobals::HAS_OWN_PROPERTY,
       keys = returning_function(&compilation.options.output.environment, "Object.keys(map)", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     };
-    RawSource::from(source).boxed()
+    RawStringSource::from(source).boxed()
   }
 
   fn get_eager_source(&self, compilation: &Compilation) -> BoxSource {
@@ -756,9 +768,9 @@ impl ContextModule {
       fake_map_init_statement = self.get_fake_map_init_statement(&fake_map),
       has_own_property = RuntimeGlobals::HAS_OWN_PROPERTY,
       keys = returning_function(&compilation.options.output.environment, "Object.keys(map)", ""),
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     };
-    RawSource::from(source).boxed()
+    RawStringSource::from(source).boxed()
   }
 
   fn get_sync_source(&self, compilation: &Compilation) -> BoxSource {
@@ -793,9 +805,9 @@ impl ContextModule {
       map = json_stringify(&map),
       fake_map_init_statement = self.get_fake_map_init_statement(&fake_map),
       has_own_property = RuntimeGlobals::HAS_OWN_PROPERTY,
-      id = json_stringify(self.id(&compilation.chunk_graph))
+      id = json_stringify(self.get_module_id(&compilation.module_ids_artifact))
     };
-    RawSource::from(source).boxed()
+    RawStringSource::from(source).boxed()
   }
 }
 
@@ -821,6 +833,7 @@ impl DependenciesBlock for ContextModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait::async_trait]
 impl Module for ContextModule {
   impl_module_meta_info!();
@@ -833,11 +846,7 @@ impl Module for ContextModule {
     &[SourceType::JavaScript]
   }
 
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-
-  fn original_source(&self) -> Option<&dyn rspack_sources::Source> {
+  fn source(&self) -> Option<&rspack_sources::BoxSource> {
     None
   }
 
@@ -886,13 +895,17 @@ impl Module for ContextModule {
     if matches!(self.options.context_options.mode, ContextMode::LazyOnce)
       && !context_element_dependencies.is_empty()
     {
-      let loc = DependencyRange::new(
-        self.options.context_options.start,
-        self.options.context_options.end,
-      );
+      let loc = DependencyLocation::Real(RealDependencyLocation::new(
+        (
+          self.options.context_options.start,
+          self.options.context_options.end,
+        )
+          .into(),
+        None,
+      ));
       let mut block = AsyncDependenciesBlock::new(
         (*self.identifier).into(),
-        Some(DependencyLocation::Real(loc)),
+        Some(loc),
         None,
         context_element_dependencies
           .into_iter()
@@ -906,7 +919,6 @@ impl Module for ContextModule {
       blocks.push(Box::new(block));
     } else if matches!(self.options.context_options.mode, ContextMode::Lazy) {
       let mut index = 0;
-      // TODO(shulaoda): add loc for ContextElementDependency and AsyncDependenciesBlock
       for context_element_dependency in context_element_dependencies {
         let group_options = self
           .options
@@ -959,29 +971,20 @@ impl Module for ContextModule {
         .collect();
     }
 
-    let mut context_dependencies: HashSet<PathBuf> = Default::default();
-    context_dependencies.insert(self.options.resource.clone().into_std_path_buf());
+    let mut context_dependencies: HashSet<ArcPath> = Default::default();
+    context_dependencies.insert(self.options.resource.as_std_path().into());
 
-    let build_info = BuildInfo {
-      context_dependencies,
-      ..Default::default()
-    };
+    self.build_info.context_dependencies = context_dependencies;
 
     Ok(BuildResult {
-      build_info,
-      build_meta: BuildMeta {
-        exports_type: BuildMetaExportsType::Default,
-        default_object: BuildMetaDefaultObject::RedirectWarn { ignore: false },
-        ..Default::default()
-      },
       dependencies,
       blocks,
       optimization_bailouts: vec![],
     })
   }
 
-  #[tracing::instrument(name = "ContextModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("ContextModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -1039,14 +1042,14 @@ impl Module for ContextModule {
     Ok(code_generation_result)
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    module_update_hash(self, hasher, compilation, runtime);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 
@@ -1104,13 +1107,13 @@ fn create_identifier(options: &ContextModuleOptions) -> Identifier {
     }
     id += "|groupOptions: {";
     if let Some(o) = group.prefetch_order {
-      id.push_str(&format!("prefetchOrder: {},", o));
+      id.push_str(&format!("prefetchOrder: {o},"));
     }
     if let Some(o) = group.preload_order {
-      id.push_str(&format!("preloadOrder: {},", o));
+      id.push_str(&format!("preloadOrder: {o},"));
     }
     if let Some(o) = group.fetch_priority {
-      id.push_str(&format!("fetchPriority: {},", o));
+      id.push_str(&format!("fetchPriority: {o},"));
     }
     id += "}";
   }

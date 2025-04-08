@@ -1,16 +1,42 @@
-use super::AffectType;
+use rspack_cacheable::{cacheable, cacheable_dyn};
+
+use super::{AffectType, FactorizeInfo};
 use crate::{
   AsContextDependency, AsDependencyTemplate, Context, Dependency, DependencyCategory, DependencyId,
   DependencyType, ModuleDependency, ModuleLayer,
 };
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+#[cacheable]
+#[derive(Debug, Clone)]
 pub struct EntryDependency {
   id: DependencyId,
   request: String,
   context: Context,
   layer: Option<ModuleLayer>,
   is_global: bool,
+  factorize_info: FactorizeInfo,
+}
+
+impl PartialEq for EntryDependency {
+  fn eq(&self, other: &Self) -> bool {
+    self.id == other.id
+      && self.context == other.context
+      && self.request == other.request
+      && self.layer == other.layer
+      && self.is_global == other.is_global
+  }
+}
+
+impl Eq for EntryDependency {}
+
+impl std::hash::Hash for EntryDependency {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.id.hash(state);
+    self.context.hash(state);
+    self.request.hash(state);
+    self.layer.hash(state);
+    self.is_global.hash(state);
+  }
 }
 
 impl EntryDependency {
@@ -26,6 +52,7 @@ impl EntryDependency {
       layer,
       id: DependencyId::new(),
       is_global,
+      factorize_info: Default::default(),
     }
   }
 
@@ -34,6 +61,7 @@ impl EntryDependency {
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for EntryDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -60,6 +88,7 @@ impl Dependency for EntryDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for EntryDependency {
   fn request(&self) -> &str {
     &self.request
@@ -71,6 +100,14 @@ impl ModuleDependency for EntryDependency {
 
   fn set_request(&mut self, request: String) {
     self.request = request;
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 

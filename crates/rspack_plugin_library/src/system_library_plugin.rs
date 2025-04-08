@@ -1,12 +1,12 @@
 use std::hash::Hash;
 
 use rspack_core::{
-  rspack_sources::{ConcatSource, RawSource, SourceExt},
+  rspack_sources::{ConcatSource, RawStringSource, SourceExt},
   ApplyContext, ChunkUkey, Compilation, CompilationAdditionalChunkRuntimeRequirements,
   CompilationParams, CompilerCompilation, CompilerOptions, ExternalModule, ExternalRequest,
   LibraryName, LibraryNonUmdObject, LibraryOptions, Plugin, PluginContext, RuntimeGlobals,
 };
-use rspack_error::{error, error_bail, Result};
+use rspack_error::{error_bail, Result, ToStringResultToRspackResultExt};
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_plugin_javascript::{
@@ -71,14 +71,14 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.render.tap(render::new(self));
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   Ok(())
 }
 
 #[plugin_hook(JavascriptModulesRender for SystemLibraryPlugin)]
-fn render(
+async fn render(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
@@ -92,7 +92,7 @@ fn render(
     .name
     .map(serde_json::to_string)
     .transpose()
-    .map_err(|e| error!(e.to_string()))?
+    .to_rspack_result()?
     .map(|s| format!("{s}, "))
     .unwrap_or_else(|| "".to_string());
 
@@ -115,8 +115,7 @@ fn render(
       ExternalRequest::Map(map) => map.get("amd").map(|request| request.primary()),
     })
     .collect::<Vec<_>>();
-  let external_deps_array =
-    serde_json::to_string(&external_deps_array).map_err(|e| error!(e.to_string()))?;
+  let external_deps_array = serde_json::to_string(&external_deps_array).to_rspack_result()?;
   let external_arguments = external_module_names(&modules, compilation);
 
   // The name of the variable provided by System for exporting
@@ -142,25 +141,25 @@ fn render(
     .join(",\n");
   let is_has_external_modules = modules.is_empty();
   let mut source = ConcatSource::default();
-  source.add(RawSource::from(format!("System.register({name}{external_deps_array}, function({dynamic_export}, __system_context__) {{\n")));
+  source.add(RawStringSource::from(format!("System.register({name}{external_deps_array}, function({dynamic_export}, __system_context__) {{\n")));
   if !is_has_external_modules {
     // 	var __WEBPACK_EXTERNAL_MODULE_{}__ = {};
-    source.add(RawSource::from(external_var_declarations));
+    source.add(RawStringSource::from(external_var_declarations));
     // Object.defineProperty(__WEBPACK_EXTERNAL_MODULE_{}__, "__esModule", { value: true });
-    source.add(RawSource::from(external_var_initialization));
+    source.add(RawStringSource::from(external_var_initialization));
   }
-  source.add(RawSource::from("return {\n"));
+  source.add(RawStringSource::from_static("return {\n"));
   if !is_has_external_modules {
     // setter : { [function(module){},...] },
     let setters = format!("setters: [{}],\n", setters);
-    source.add(RawSource::from(setters))
+    source.add(RawStringSource::from(setters))
   }
-  source.add(RawSource::from("execute: function() {\n"));
-  source.add(RawSource::from(format!("{dynamic_export}(")));
+  source.add(RawStringSource::from_static("execute: function() {\n"));
+  source.add(RawStringSource::from(format!("{dynamic_export}(")));
   source.add(render_source.source.clone());
-  source.add(RawSource::from(")}\n"));
-  source.add(RawSource::from("}\n"));
-  source.add(RawSource::from("\n})"));
+  source.add(RawStringSource::from_static(")}\n"));
+  source.add(RawStringSource::from_static("}\n"));
+  source.add(RawStringSource::from_static("\n})"));
   render_source.source = source.boxed();
   Ok(())
 }
@@ -183,7 +182,7 @@ async fn js_chunk_hash(
 }
 
 #[plugin_hook(CompilationAdditionalChunkRuntimeRequirements for SystemLibraryPlugin)]
-fn additional_chunk_runtime_requirements(
+async fn additional_chunk_runtime_requirements(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,

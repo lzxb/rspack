@@ -8,85 +8,59 @@ name: Rustup
 description: Install Rust with cache
 
 inputs:
-  # See https://rust-lang.github.io/rustup/concepts/components.html
-  clippy:
-    default: false
-    required: false
-    type: boolean
-  fmt:
-    default: false
-    required: false
-    type: boolean
-  docs:
-    default: false
-    required: false
-    type: boolean
-  miri:
-    default: false
-    required: false
-    type: boolean
-  save-cache:
-    default: false
-    required: false
-    type: boolean
-  shared-key:
-    default: "check"
-    required: false
+  key:
+    required: true
     type: string
+  save-if:
+    default: false
+    required: false
+    type: boolean
 
 runs:
   using: composite
   steps:
-    - name: Print Inputs
+    - name: Install rustup, if needed
+      if: runner.os != 'Windows'
       shell: bash
       run: |
-        echo 'clippy: ${{ inputs.clippy }}'
-        echo 'fmt: ${{ inputs.fmt }}'
-        echo 'docs: ${{ inputs.docs }}'
-        echo 'save-cache: ${{ inputs.save-cache }}'
-        echo 'shared-key: ${{ inputs.shared-key }}'
+        if ! command -v rustup &> /dev/null ; then
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -fsSL "https://sh.rustup.rs" | sh -s -- --default-toolchain none -y
+          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> $GITHUB_PATH
+        fi
 
-    - name: Remove `profile` line on MacOS
+    - name: Get toolchain
+      id: get-toolchain
       shell: bash
-      if: runner.os == 'macOS'
-      run: sed -i '' '/profile/d' rust-toolchain.toml
+      run: |
+        toolchain=$(grep -E "^channel\s*=" rust-toolchain.toml | sed -n -E 's/^[ \t]*channel[ \t]*=[ \t]*"([^"]*)"[^#]*.*$/\1/p' | tr -d '[:space:]')
+        echo "toolchain=${toolchain}" >> $GITHUB_OUTPUT
 
-    - name: Remove `profile` line on non-MacOS
-      shell: bash
-      if: runner.os != 'macOS'
-      run: sed -i '/profile/d' rust-toolchain.toml
+    - name: Restore rustup cache
+      id: restore
+      uses: ./.github/actions/cache/restore
+      with:
+        path: ~/.rustup/toolchains
+        key: rustup-cache-${{ runner.os }}-${{ steps.get-toolchain.outputs.toolchain }}
 
-    - name: Set minimal
-      shell: bash
-      run: rustup set profile minimal
-
-    - name: Add Miri
-      shell: bash
-      if: ${{ inputs.miri == 'true' }}
-      run: rustup component add miri
-
-    - name: Add Clippy
-      shell: bash
-      if: ${{ inputs.clippy == 'true' }}
-      run: rustup component add clippy
-
-    - name: Add Rustfmt
-      shell: bash
-      if: ${{ inputs.fmt == 'true' }}
-      run: rustup component add rustfmt
-
-    - name: Add docs
-      shell: bash
-      if: ${{ inputs.docs == 'true' }}
-      run: rustup component add rust-docs
-
+    # install components for nightly toolchain
     - name: Install
       shell: bash
-      run: rustup show
+      run: |
+        toolchain='${{ steps.get-toolchain.outputs.toolchain }}'
+        rustup toolchain install $toolchain \
+          -c rustc \
+          -c cargo \
+          -c rust-std
 
-    - name: Cache on ${{ github.ref_name }}
-      uses: Swatinem/rust-cache@v2
-      if: ${{ startsWith(runner.name, 'GitHub Actions') }}
+    - name: Save rustup cache
+      uses: ./.github/actions/cache/save
+      if: ${{ inputs.save-if == 'true' && steps.restore.outputs.cache-hit != 'true' }}
       with:
-        shared-key: ${{ inputs.shared-key }}
-        save-if: ${{ inputs.save-cache == 'true' }}
+        path: ~/.rustup/toolchains/${{ steps.get-toolchain.outputs.toolchain }}*
+        key: rustup-cache-${{ runner.os }}-${{ steps.get-toolchain.outputs.toolchain }}
+
+    - name: Cargo cache
+      uses: ./.github/actions/rustup/cargo
+      with:
+        key: ${{ inputs.key }}
+        save-if: ${{ inputs.save-if }}

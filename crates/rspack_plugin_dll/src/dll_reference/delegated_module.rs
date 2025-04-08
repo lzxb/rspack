@@ -1,17 +1,20 @@
 use std::{borrow::Cow, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   impl_module_meta_info, impl_source_map_config, module_raw, module_update_hash,
-  rspack_sources::{BoxSource, OriginalSource, RawSource, Source},
+  rspack_sources::{BoxSource, OriginalSource, RawStringSource},
   throw_missing_module_error_block, AsyncDependenciesBlockIdentifier, BoxDependency, BuildContext,
   BuildInfo, BuildMeta, BuildResult, CodeGenerationResult, Compilation, ConcatenationScope,
   Context, DependenciesBlock, DependencyId, FactoryMeta, LibIdentOptions, Module, ModuleDependency,
-  ModuleType, RuntimeGlobals, RuntimeSpec, SourceType, StaticExportsDependency, StaticExportsSpec,
+  ModuleId, ModuleType, RuntimeGlobals, RuntimeSpec, SourceType, StaticExportsDependency,
+  StaticExportsSpec,
 };
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
-use rspack_util::source_map::ModuleSourceMapConfig;
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_util::{json_stringify, source_map::ModuleSourceMapConfig};
 
 use super::delegated_source_dependency::DelegatedSourceDependency;
 use crate::{DllManifestContentItem, DllManifestContentItemExports};
@@ -19,10 +22,11 @@ use crate::{DllManifestContentItem, DllManifestContentItemExports};
 pub type SourceRequest = String;
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug, Default)]
 pub struct DelegatedModule {
   source_request: SourceRequest,
-  request: Option<String>,
+  request: Option<ModuleId>,
   delegation_type: String,
   user_request: String,
   original_request: Option<String>,
@@ -30,8 +34,8 @@ pub struct DelegatedModule {
   dependencies: Vec<DependencyId>,
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
 }
 
 impl DelegatedModule {
@@ -54,6 +58,7 @@ impl DelegatedModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait]
 impl Module for DelegatedModule {
   impl_module_meta_info!();
@@ -70,7 +75,7 @@ impl Module for DelegatedModule {
     self.original_request.as_ref().map(|request| request.into())
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -84,10 +89,6 @@ impl Module for DelegatedModule {
 
   fn size(&self, _source_type: Option<&SourceType>, _compilation: Option<&Compilation>) -> f64 {
     42.0
-  }
-
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
   }
 
   async fn build(
@@ -108,14 +109,14 @@ impl Module for DelegatedModule {
         false,
       )) as BoxDependency,
     ];
+    self.build_meta = self.delegate_data.build_meta.clone();
     Ok(BuildResult {
       dependencies,
-      build_meta: self.delegate_data.build_meta.clone().unwrap_or_default(),
       ..Default::default()
     })
   }
 
-  fn code_generation(
+  async fn code_generation(
     &self,
     compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -140,7 +141,7 @@ impl Module for DelegatedModule {
     let str = match source_module {
       Some(_) => {
         let mut s = format!(
-          "module.exports = {}",
+          "module.exports = ({})",
           module_raw(
             compilation,
             &mut code_generation_result.runtime_requirements,
@@ -150,17 +151,19 @@ impl Module for DelegatedModule {
           )
         );
 
-        let request = self
-          .request
-          .as_ref()
-          .expect("manifest content should have `id`.");
+        let request = json_stringify(
+          self
+            .request
+            .as_ref()
+            .expect("manifest content should have `id`."),
+        );
 
         match self.delegation_type.as_ref() {
           "require" => {
-            s += &format!("({})", request);
+            s += &format!("({request})");
           }
           "object" => {
-            s += &format!("[{}]", request);
+            s += &format!("[{request}]");
           }
           _ => panic!("delegation_type should be 'require' or 'object'"),
         }
@@ -177,7 +180,7 @@ impl Module for DelegatedModule {
     let source: BoxSource = if source_map.source_map() || source_map.simple_source_map() {
       Arc::new(OriginalSource::new(str, self.identifier().to_string()))
     } else {
-      let raw_source: RawSource = str.into();
+      let raw_source: RawStringSource = str.into();
       Arc::new(raw_source)
     };
 
@@ -187,24 +190,24 @@ impl Module for DelegatedModule {
   }
 
   fn need_build(&self) -> bool {
-    self.build_meta.is_none()
+    false
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    mut hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
     self.delegation_type.hash(&mut hasher);
 
     if let Some(request) = &self.request {
       request.hash(&mut hasher);
     }
 
-    module_update_hash(self, hasher, compilation, runtime);
+    module_update_hash(self, &mut hasher, compilation, runtime);
 
-    Ok(())
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 
@@ -212,7 +215,11 @@ impl Identifiable for DelegatedModule {
   fn identifier(&self) -> Identifier {
     format!(
       "delegated {} from {}",
-      self.request.as_deref().unwrap_or_default(),
+      self
+        .request
+        .as_ref()
+        .map(|r| r.to_string())
+        .unwrap_or_default(),
       self.source_request
     )
     .into()

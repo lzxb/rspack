@@ -1,30 +1,34 @@
 use std::borrow::Cow;
 
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_collections::Identifiable;
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_macros::impl_source_map_config;
-use rspack_sources::{BoxSource, RawSource, Source, SourceExt};
+use rspack_sources::{BoxSource, RawStringSource, Source, SourceExt};
 use rspack_util::source_map::SourceMapKind;
 
 use crate::{
-  dependencies_block::AsyncDependenciesBlockIdentifier, impl_module_meta_info, BuildContext,
-  BuildInfo, BuildMeta, BuildResult, CodeGenerationResult, Context, DependenciesBlock,
-  DependencyId, Module, ModuleIdentifier, ModuleType, RuntimeGlobals, RuntimeSpec, SourceType,
+  dependencies_block::AsyncDependenciesBlockIdentifier, impl_module_meta_info, module_update_hash,
+  BuildInfo, BuildMeta, CodeGenerationResult, Compilation, ConcatenationScope, Context,
+  DependenciesBlock, DependencyId, FactoryMeta, Module, ModuleIdentifier, ModuleType,
+  RuntimeGlobals, RuntimeSpec, SourceType,
 };
-use crate::{module_update_hash, Compilation, ConcatenationScope, FactoryMeta};
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug)]
 pub struct RawModule {
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
   dependencies: Vec<DependencyId>,
+  #[cacheable(with=AsPreset)]
   source: BoxSource,
   identifier: ModuleIdentifier,
   readable_identifier: String,
   runtime_requirements: RuntimeGlobals,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
 }
 
 static RAW_MODULE_SOURCE_TYPES: &[SourceType] = &[SourceType::JavaScript];
@@ -40,13 +44,17 @@ impl RawModule {
       blocks: Default::default(),
       dependencies: Default::default(),
       // TODO: useSourceMap, etc...
-      source: RawSource::from(source).boxed(),
+      source: RawStringSource::from(source).boxed(),
       identifier,
       readable_identifier,
       runtime_requirements,
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: BuildInfo {
+        cacheable: true,
+        strict: true,
+        ..Default::default()
+      },
+      build_meta: Default::default(),
       source_map_kind: SourceMapKind::empty(),
     }
   }
@@ -80,13 +88,10 @@ impl DependenciesBlock for RawModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait::async_trait]
 impl Module for RawModule {
   impl_module_meta_info!();
-
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
 
   fn module_type(&self) -> &ModuleType {
     &ModuleType::JsAuto
@@ -96,8 +101,8 @@ impl Module for RawModule {
     RAW_MODULE_SOURCE_TYPES
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
-    Some(self.source.as_ref())
+  fn source(&self) -> Option<&BoxSource> {
+    Some(&self.source)
   }
 
   fn readable_identifier(&self, _context: &Context) -> Cow<str> {
@@ -108,24 +113,8 @@ impl Module for RawModule {
     f64::max(1.0, self.source.size() as f64)
   }
 
-  async fn build(
-    &mut self,
-    _build_context: BuildContext,
-    _: Option<&Compilation>,
-  ) -> Result<BuildResult> {
-    Ok(BuildResult {
-      build_info: BuildInfo {
-        cacheable: true,
-        strict: true,
-        ..Default::default()
-      },
-      dependencies: vec![],
-      ..Default::default()
-    })
-  }
-
-  #[tracing::instrument(name = "RawModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("RawModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     _compilation: &crate::Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -137,15 +126,15 @@ impl Module for RawModule {
     Ok(cgr)
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    self.source.dyn_hash(hasher);
-    module_update_hash(self, hasher, compilation, runtime);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    self.source.dyn_hash(&mut hasher);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

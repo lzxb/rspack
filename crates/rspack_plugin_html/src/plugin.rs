@@ -1,13 +1,15 @@
-use std::{path::PathBuf, sync::LazyLock};
+use std::{
+  borrow::Cow,
+  path::{Path, PathBuf},
+  sync::LazyLock,
+};
 
 use cow_utils::CowUtils;
-use rspack_core::{
-  Compilation, CompilationId, CompilationProcessAssets, Filename, FilenameTemplate, NoFilenameFn,
-  Plugin,
-};
+use rspack_core::{Compilation, CompilationId, CompilationProcessAssets, Filename, Plugin};
 use rspack_error::{miette, Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
-use rspack_util::fx_hash::{BuildFxHasher, FxDashMap};
+use rspack_util::fx_hash::FxDashMap;
+use sugar_path::SugarPath;
 use swc_html::visit::VisitMutWith;
 
 use crate::{
@@ -36,7 +38,7 @@ impl HtmlRspackPlugin {
 
   pub fn get_compilation_hooks(
     id: CompilationId,
-  ) -> dashmap::mapref::one::Ref<'static, CompilationId, Box<HtmlPluginHooks>, BuildFxHasher> {
+  ) -> dashmap::mapref::one::Ref<'static, CompilationId, Box<HtmlPluginHooks>> {
     if !COMPILATION_HOOKS_MAP.contains_key(&id) {
       COMPILATION_HOOKS_MAP.insert(id, Default::default());
     }
@@ -46,20 +48,20 @@ impl HtmlRspackPlugin {
   }
 
   pub fn get_compilation_hooks_mut(
-    compilation: &Compilation,
-  ) -> dashmap::mapref::one::RefMut<'_, CompilationId, Box<HtmlPluginHooks>, BuildFxHasher> {
-    COMPILATION_HOOKS_MAP.entry(compilation.id()).or_default()
+    id: CompilationId,
+  ) -> dashmap::mapref::one::RefMut<'static, CompilationId, Box<HtmlPluginHooks>> {
+    COMPILATION_HOOKS_MAP.entry(id).or_default()
   }
 }
 
 async fn generate_html(
   filename: &str,
-  html_file_name: &Filename<NoFilenameFn>,
+  html_file_name: &Filename,
   config: &HtmlRspackPluginOptions,
   compilation: &mut Compilation,
   hooks: &HtmlPluginHooks,
 ) -> Result<(String, String, Vec<PathBuf>), miette::Error> {
-  let public_path = config.get_public_path(compilation, filename);
+  let public_path = config.get_public_path(compilation, filename).await;
 
   let mut template = HtmlTemplate::new(config, compilation)?;
 
@@ -75,13 +77,15 @@ async fn generate_html(
     &public_path,
     &template_file_name,
     html_file_name,
-  );
+  )
+  .await?;
 
   let before_generation_data = hooks
     .before_asset_tag_generation
     .call(BeforeAssetTagGenerationData {
       assets: assets_info.0,
       output_name: html_file_name.as_str().to_string(),
+      compilation_id: compilation.id(),
     })
     .await?;
 
@@ -94,6 +98,7 @@ async fn generate_html(
       asset_tags,
       public_path: public_path.clone(),
       output_name: html_file_name.as_str().to_string(),
+      compilation_id: compilation.id(),
     })
     .await?;
 
@@ -107,6 +112,7 @@ async fn generate_html(
       body_tags,
       public_path: public_path.clone(),
       output_name: html_file_name.as_str().to_string(),
+      compilation_id: compilation.id(),
     })
     .await?;
 
@@ -130,6 +136,7 @@ async fn generate_html(
       head_tags: alter_asset_tag_groups_data.head_tags,
       body_tags: alter_asset_tag_groups_data.body_tags,
       output_name: html_file_name.as_str().to_string(),
+      compilation_id: compilation.id(),
     })
     .await?;
 
@@ -181,30 +188,55 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
 
   // TODO: parallel generate html
   for filename in &config.filename {
-    let output_file_name = FilenameTemplate::from(
-      filename
-        .cow_replace("[templatehash]", "[contenthash]")
-        .into_owned(),
-    );
+    let filename = filename.cow_replace("[templatehash]", "[contenthash]");
 
-    let (template_file_name, html) =
-      match generate_html(filename, &output_file_name, config, compilation, &hooks).await {
-        Ok(content) => {
-          compilation.file_dependencies.extend(content.2);
-          (content.0, content.1)
-        }
-        Err(err) => {
-          let error_msg = err.to_string();
-          compilation.push_diagnostic(Diagnostic::from(err));
-          ("error.html".to_string(), create_error_html(&error_msg))
-        }
-      };
+    // convert absolute filename into relative so that webpack can
+    // generate it at correct location
+    let filename = {
+      let filename_path = Path::new(filename.as_ref());
+      if filename_path.is_absolute() {
+        let output_path = &compilation.options.output.path;
+        Cow::from(
+          filename_path
+            .relative(output_path)
+            .to_string_lossy()
+            .to_string(),
+        )
+      } else {
+        filename
+      }
+    };
+
+    let output_file_name = Filename::from(filename.to_string());
+
+    let (template_file_name, html) = match generate_html(
+      filename.as_ref(),
+      &output_file_name,
+      config,
+      compilation,
+      &hooks,
+    )
+    .await
+    {
+      Ok(content) => {
+        compilation
+          .file_dependencies
+          .extend(content.2.into_iter().map(Into::into));
+        (content.0, content.1)
+      }
+      Err(err) => {
+        let error_msg = err.to_string();
+        compilation.push_diagnostic(Diagnostic::from(err));
+        ("error.html".to_string(), create_error_html(&error_msg))
+      }
+    };
 
     let mut before_emit_data = hooks
       .before_emit
       .call(BeforeEmitData {
         html,
         output_name: output_file_name.as_str().to_string(),
+        compilation_id: compilation.id(),
       })
       .await?;
 
@@ -224,7 +256,8 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       &before_emit_data.html,
       &template_file_name,
       compilation,
-    );
+    )
+    .await?;
 
     compilation.emit_asset(html_asset.0.clone(), html_asset.1);
 
@@ -232,6 +265,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       .after_emit
       .call(AfterEmitData {
         output_name: html_asset.0.to_string(),
+        compilation_id: compilation.id(),
       })
       .await?;
   }

@@ -1,19 +1,26 @@
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsPreset, AsVec},
+};
 use rspack_core::{
-  property_access, AsContextDependency, Compilation, Dependency, DependencyCategory, DependencyId,
-  DependencyTemplate, DependencyType, ExtendedReferencedExport, ModuleDependency, ModuleGraph,
-  RuntimeGlobals, RuntimeSpec, TemplateContext, TemplateReplaceSource, UsedName,
+  property_access, AsContextDependency, Dependency, DependencyCategory, DependencyId,
+  DependencyTemplate, DependencyType, ExtendedReferencedExport, FactorizeInfo, ModuleDependency,
+  ModuleGraph, RuntimeGlobals, RuntimeSpec, TemplateContext, TemplateReplaceSource, UsedName,
 };
 use swc_core::atoms::Atom;
 
 use super::ExportsBase;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct CommonJsSelfReferenceDependency {
   id: DependencyId,
   range: (u32, u32),
   base: ExportsBase,
+  #[cacheable(with=AsVec<AsPreset>)]
   names: Vec<Atom>,
   is_call: bool,
+  factorize_info: FactorizeInfo,
 }
 
 impl CommonJsSelfReferenceDependency {
@@ -24,10 +31,12 @@ impl CommonJsSelfReferenceDependency {
       base,
       names,
       is_call,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for CommonJsSelfReferenceDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -68,14 +77,24 @@ impl Dependency for CommonJsSelfReferenceDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for CommonJsSelfReferenceDependency {
   fn request(&self) -> &str {
     "self"
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 
 impl AsContextDependency for CommonJsSelfReferenceDependency {}
 
+#[cacheable_dyn]
 impl DependencyTemplate for CommonJsSelfReferenceDependency {
   fn apply(
     &self,
@@ -135,17 +154,5 @@ impl DependencyTemplate for CommonJsSelfReferenceDependency {
       ),
       None,
     )
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }

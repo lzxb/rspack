@@ -1,15 +1,17 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AsDependency, Compilation, DependencyTemplate, InitFragmentKey, InitFragmentStage, ModuleGraph,
-  NormalInitFragment, RuntimeGlobals, RuntimeSpec, TemplateContext, TemplateReplaceSource,
-  UsageState,
+  DependencyTemplate, InitFragmentKey, InitFragmentStage, ModuleGraph, NormalInitFragment,
+  RuntimeGlobals, TemplateContext, TemplateReplaceSource, UsageState,
 };
 use swc_core::atoms::Atom;
 
 // Mark module `__esModule`.
 // Add `__webpack_require__.r(__webpack_exports__);`.
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMCompatibilityDependency;
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMCompatibilityDependency {
   fn apply(
     &self,
@@ -69,21 +71,8 @@ impl DependencyTemplate for ESMCompatibilityDependency {
         InitFragmentStage::StageAsyncBoundary,
         0,
         InitFragmentKey::unique(),
-        Some(format!("\n__webpack_async_result__();\n}} catch(e) {{ __webpack_async_result__(e); }} }}{});", if matches!(module.build_meta().as_ref().map(|meta| meta.has_top_level_await), Some(true)) { ", 1" } else { "" })),
+        Some(format!("\n__webpack_async_result__();\n}} catch(e) {{ __webpack_async_result__(e); }} }}{});", if module.build_meta().has_top_level_await { ", 1" } else { "" })),
       )));
     }
   }
-
-  fn dependency_id(&self) -> Option<rspack_core::DependencyId> {
-    None
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
-  }
 }
-impl AsDependency for ESMCompatibilityDependency {}

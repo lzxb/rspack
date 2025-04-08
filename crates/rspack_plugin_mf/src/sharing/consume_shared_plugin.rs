@@ -1,10 +1,13 @@
-use std::collections::HashSet;
-use std::sync::LazyLock;
-use std::sync::Mutex;
-use std::{fmt, path::Path, sync::Arc};
+use std::{
+  collections::HashSet,
+  fmt,
+  path::Path,
+  sync::{Arc, LazyLock, Mutex},
+};
 
 use async_trait::async_trait;
 use regex::Regex;
+use rspack_cacheable::cacheable;
 use rspack_core::{
   ApplyContext, BoxModule, ChunkUkey, Compilation, CompilationAdditionalTreeRuntimeRequirements,
   CompilationParams, CompilerOptions, CompilerThisCompilation, Context, DependencyCategory,
@@ -21,6 +24,7 @@ use super::{
   consume_shared_runtime_module::ConsumeSharedRuntimeModule,
 };
 
+#[cacheable]
 #[derive(Debug, Clone, Hash)]
 pub struct ConsumeOptions {
   pub import: Option<String>,
@@ -34,6 +38,7 @@ pub struct ConsumeOptions {
   pub eager: bool,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConsumeVersion {
   Version(String),
@@ -82,7 +87,7 @@ fn resolve_matched_configs(
       resolved.insert(resource.path.as_str().to_string(), config.clone());
       compilation
         .file_dependencies
-        .insert(resource.path.into_std_path_buf());
+        .insert(resource.path.as_path().into());
     } else if ABSOLUTE_REQUEST.is_match(request) {
       resolved.insert(request.to_owned(), config.clone());
     } else if request.ends_with('/') {
@@ -107,12 +112,18 @@ async fn get_description_file(
 
   loop {
     let description_file = dir.join(description_filename);
-    if let Ok(data) = tokio::fs::read(&description_file).await
+
+    #[cfg(not(target_family = "wasm"))]
+    let data = tokio::fs::read(&description_file).await;
+    #[cfg(target_family = "wasm")]
+    let data = std::fs::read(&description_file);
+
+    if let Ok(data) = data
       && let Ok(data) = serde_json::from_slice::<serde_json::Value>(&data)
     {
       if satisfies_description_file_data
         .as_ref()
-        .map_or(false, |f| !f(Some(data.clone())))
+        .is_some_and(|f| !f(Some(data.clone())))
       {
         checked_file_paths.insert(description_file.to_string_lossy().to_string());
       } else {
@@ -244,14 +255,9 @@ impl ConsumeSharedPlugin {
           context.as_ref(),
           Some(|data: Option<serde_json::Value>| {
             if let Some(data) = data {
-              let name_matches = data
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map_or(false, |name| name == package_name);
+              let name_matches = data.get("name").and_then(|n| n.as_str()) == Some(package_name);
               let version_matches = get_required_version_from_description_file(data, package_name)
-                .map_or(false, |version| {
-                  matches!(version, ConsumeVersion::Version(_))
-                });
+                .is_some_and(|version| matches!(version, ConsumeVersion::Version(_)));
               name_matches || version_matches
             } else {
               false

@@ -1,19 +1,22 @@
-use std::hash::BuildHasherDefault;
-use std::sync::Arc;
+use std::{hash::BuildHasherDefault, sync::Arc};
 
 use indexmap::{IndexMap, IndexSet};
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsOption, AsPreset, AsVec, Skip},
+};
 use rspack_collections::IdentifierSet;
 use rspack_core::{
   create_exports_object_referenced, create_no_exports_referenced, filter_runtime, get_exports_type,
   process_export_info, property_access, property_name, string_of_used_name, AsContextDependency,
-  Compilation, ConditionalInitFragment, ConnectionState, Dependency, DependencyCategory,
-  DependencyCondition, DependencyConditionFn, DependencyId, DependencyRange, DependencyTemplate,
+  ConditionalInitFragment, ConnectionState, Dependency, DependencyCategory, DependencyCondition,
+  DependencyConditionFn, DependencyId, DependencyLocation, DependencyRange, DependencyTemplate,
   DependencyType, ESMExportInitFragment, ExportInfo, ExportInfoProvided, ExportNameOrSpec,
   ExportPresenceMode, ExportSpec, ExportsInfo, ExportsOfExportsSpec, ExportsSpec, ExportsType,
-  ExtendedReferencedExport, ImportAttributes, InitFragmentExt, InitFragmentKey, InitFragmentStage,
-  JavascriptParserOptions, ModuleDependency, ModuleGraph, ModuleIdentifier, NormalInitFragment,
-  RuntimeCondition, RuntimeGlobals, RuntimeSpec, Template, TemplateContext, TemplateReplaceSource,
-  UsageState, UsedName,
+  ExtendedReferencedExport, FactorizeInfo, ImportAttributes, InitFragmentExt, InitFragmentKey,
+  InitFragmentStage, JavascriptParserOptions, ModuleDependency, ModuleGraph, ModuleIdentifier,
+  NormalInitFragment, RuntimeCondition, RuntimeGlobals, RuntimeSpec, SharedSourceMap, Template,
+  TemplateContext, TemplateReplaceSource, UsageState, UsedName,
 };
 use rspack_error::{
   miette::{MietteDiagnostic, Severity},
@@ -31,11 +34,15 @@ use super::{
 // case1: `import { a } from 'a'; export { a }`
 // case2: `export { a } from 'a';`
 // case3: `export * from 'a'`
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMExportImportedSpecifierDependency {
   pub id: DependencyId,
+  #[cacheable(with=AsVec<AsPreset>)]
   pub ids: Vec<Atom>,
+  #[cacheable(with=AsOption<AsPreset>)]
   pub name: Option<Atom>,
+  #[cacheable(with=AsPreset)]
   pub request: Atom,
   pub export_all: bool,
   pub source_order: i32,
@@ -44,6 +51,9 @@ pub struct ESMExportImportedSpecifierDependency {
   attributes: Option<ImportAttributes>,
   resource_identifier: String,
   export_presence_mode: ExportPresenceMode,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
+  factorize_info: FactorizeInfo,
 }
 
 impl ESMExportImportedSpecifierDependency {
@@ -58,6 +68,7 @@ impl ESMExportImportedSpecifierDependency {
     range: DependencyRange,
     export_presence_mode: ExportPresenceMode,
     attributes: Option<ImportAttributes>,
+    source_map: Option<SharedSourceMap>,
   ) -> Self {
     let resource_identifier =
       create_resource_identifier_for_esm_dependency(&request, attributes.as_ref());
@@ -73,6 +84,8 @@ impl ESMExportImportedSpecifierDependency {
       range,
       export_presence_mode,
       attributes,
+      source_map,
+      factorize_info: Default::default(),
     }
   }
 
@@ -82,8 +95,7 @@ impl ESMExportImportedSpecifierDependency {
       .get_parent_module(&self.id)
       .and_then(|ident| module_graph.module_by_identifier(ident))
       .expect("should have mgm")
-      .build_info()
-      .expect("should have build info");
+      .build_info();
     &build_info.esm_named_exports
   }
 
@@ -97,11 +109,17 @@ impl ESMExportImportedSpecifierDependency {
       .and_then(|ident| module_graph.module_by_identifier(ident));
 
     if let Some(module) = module {
-      let build_info = module.build_info().expect("should have build info");
+      let build_info = module.build_info();
       Some(&build_info.all_star_exports)
     } else {
       None
     }
+  }
+
+  pub fn get_ids<'a>(&'a self, mg: &'a ModuleGraph) -> &'a [Atom] {
+    mg.get_dep_meta_if_existing(&self.id)
+      .map(|meta| meta.ids.as_slice())
+      .unwrap_or_else(|| self.ids.as_slice())
   }
 
   // TODO cache get_mode result
@@ -857,11 +875,11 @@ impl ESMExportImportedSpecifierDependency {
         .expect("should have parent module for dependency");
       let mut diagnostic = if let Some(span) = self.range()
         && let Some(parent_module) = module_graph.module_by_identifier(parent_module_identifier)
-        && let Some(source) = parent_module.original_source().map(|s| s.source())
+        && let Some(source) = parent_module.source()
       {
         Diagnostic::from(
           TraceableError::from_file(
-            source.into_owned(),
+            source.source().into_owned(),
             span.start as usize,
             span.end as usize,
             title.to_string(),
@@ -988,6 +1006,7 @@ pub struct DiscoverActiveExportsFromOtherStarExportsRet<'a> {
   pub dependency_index: usize,
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMExportImportedSpecifierDependency {
   fn apply(
     &self,
@@ -1019,27 +1038,16 @@ impl DependencyTemplate for ESMExportImportedSpecifierDependency {
       self.add_export_fragments(code_generatable_context, mode);
     }
   }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
-  }
 }
 
+#[cacheable_dyn]
 impl Dependency for ESMExportImportedSpecifierDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn range(&self) -> Option<&DependencyRange> {
@@ -1058,7 +1066,6 @@ impl Dependency for ESMExportImportedSpecifierDependency {
     self.attributes.as_ref()
   }
 
-  #[allow(clippy::unwrap_in_result)]
   fn get_exports(&self, mg: &ModuleGraph) -> Option<ExportsSpec> {
     let mode = self.get_mode(self.name.clone(), mg, &self.id, None);
     match mode.ty {
@@ -1216,10 +1223,8 @@ impl Dependency for ESMExportImportedSpecifierDependency {
     ConnectionState::Bool(false)
   }
 
-  fn get_ids(&self, mg: &ModuleGraph) -> Vec<Atom> {
-    mg.get_dep_meta_if_existing(&self.id)
-      .map(|meta| meta.ids.clone())
-      .unwrap_or_else(|| self.ids.clone())
+  fn _get_ids<'a>(&'a self, mg: &'a ModuleGraph) -> &'a [Atom] {
+    self.get_ids(mg)
   }
 
   fn resource_identifier(&self) -> Option<&str> {
@@ -1230,7 +1235,7 @@ impl Dependency for ESMExportImportedSpecifierDependency {
     Some(self.source_order)
   }
 
-  #[tracing::instrument(skip_all)]
+  // #[tracing::instrument(skip_all)]
   fn get_diagnostics(&self, module_graph: &ModuleGraph) -> Option<Vec<Diagnostic>> {
     let module = module_graph.get_parent_module(&self.id)?;
     let module = module_graph.module_by_identifier(module)?;
@@ -1242,7 +1247,7 @@ impl Dependency for ESMExportImportedSpecifierDependency {
       let mut diagnostics = Vec::new();
       if let Some(error) = esm_import_dependency_get_linking_error(
         self,
-        &ids,
+        ids,
         module_graph,
         self
           .name
@@ -1254,7 +1259,7 @@ impl Dependency for ESMExportImportedSpecifierDependency {
         diagnostics.push(error);
       }
       if let Some(errors) =
-        self.get_conflicting_star_exports_errors(&ids, module_graph, should_error)
+        self.get_conflicting_star_exports_errors(ids, module_graph, should_error)
       {
         diagnostics.extend(errors);
       }
@@ -1358,6 +1363,7 @@ impl DependencyConditionFn for ESMExportImportedSpecifierDependencyCondition {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ESMExportImportedSpecifierDependency {
   fn request(&self) -> &str {
     &self.request
@@ -1371,19 +1377,19 @@ impl ModuleDependency for ESMExportImportedSpecifierDependency {
     self.request = request.into();
   }
 
-  fn is_export_all(&self) -> Option<bool> {
-    if self.export_all {
-      Some(true)
-    } else {
-      None
-    }
-  }
-
   fn get_condition(&self) -> Option<DependencyCondition> {
     let id = self.id;
     Some(DependencyCondition::Fn(Arc::new(
       ESMExportImportedSpecifierDependencyCondition(id),
     )))
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 

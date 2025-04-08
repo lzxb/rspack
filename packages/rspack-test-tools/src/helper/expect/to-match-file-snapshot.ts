@@ -7,9 +7,11 @@ import path from "node:path";
 import chalk from "chalk";
 import filenamify from "filenamify";
 import { diff } from "jest-diff";
-import mkdirp from "mkdirp";
 import type { FileMatcherOptions } from "../../../jest";
 
+const { serialize } = require(
+	path.join(path.dirname(require.resolve("jest-snapshot")), "./utils.js")
+);
 /**
  * Check if 2 strings or buffer are equal
  */
@@ -38,10 +40,15 @@ export function toMatchFileSnapshot(
 			_updateSnapshot: "none" | "new" | "all";
 		};
 	},
-	content: string | Buffer,
+	rawContent: string | Buffer,
 	filepath: string,
 	options: FileMatcherOptions = {}
 ) {
+	const content =
+		Buffer.isBuffer(rawContent) || typeof rawContent === "string"
+			? rawContent
+			: serialize(rawContent);
+
 	const { isNot, snapshotState } = this;
 
 	const filename =
@@ -98,7 +105,7 @@ export function toMatchFileSnapshot(
 			return { pass: true, message: () => "" };
 		}
 		if (snapshotState._updateSnapshot === "all") {
-			mkdirp.sync(path.dirname(filename));
+			fs.mkdirSync(path.dirname(filename), { recursive: true });
 			fs.writeFileSync(filename, content);
 
 			snapshotState.updated++;
@@ -136,7 +143,7 @@ export function toMatchFileSnapshot(
 		(snapshotState._updateSnapshot === "new" ||
 			snapshotState._updateSnapshot === "all")
 	) {
-		mkdirp.sync(path.dirname(filename));
+		fs.mkdirSync(path.dirname(filename), { recursive: true });
 		fs.writeFileSync(filename, content);
 
 		snapshotState.added++;

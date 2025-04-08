@@ -1,14 +1,18 @@
-use super::AffectType;
+use rspack_cacheable::{cacheable, cacheable_dyn};
+
+use super::{AffectType, FactorizeInfo};
 use crate::{
   AsContextDependency, AsDependencyTemplate, Context, Dependency, DependencyCategory, DependencyId,
   DependencyType, ModuleDependency,
 };
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+#[cacheable]
+#[derive(Debug, Clone)]
 pub struct LoaderImportDependency {
   id: DependencyId,
   context: Context,
   request: String,
+  factorize_info: FactorizeInfo,
 }
 
 impl LoaderImportDependency {
@@ -17,13 +21,40 @@ impl LoaderImportDependency {
       request,
       context,
       id: DependencyId::new(),
+      factorize_info: Default::default(),
     }
+  }
+
+  pub fn new_with_id(id: DependencyId, request: String, context: Context) -> Self {
+    Self {
+      request,
+      context,
+      id,
+      factorize_info: Default::default(),
+    }
+  }
+}
+
+impl PartialEq for LoaderImportDependency {
+  fn eq(&self, other: &Self) -> bool {
+    self.id == other.id && self.context == other.context && self.request == other.request
+  }
+}
+
+impl Eq for LoaderImportDependency {}
+
+impl std::hash::Hash for LoaderImportDependency {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.id.hash(state);
+    self.context.hash(state);
+    self.request.hash(state);
   }
 }
 
 impl AsDependencyTemplate for LoaderImportDependency {}
 impl AsContextDependency for LoaderImportDependency {}
 
+#[cacheable_dyn]
 impl Dependency for LoaderImportDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -46,6 +77,7 @@ impl Dependency for LoaderImportDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for LoaderImportDependency {
   fn request(&self) -> &str {
     &self.request
@@ -57,5 +89,13 @@ impl ModuleDependency for LoaderImportDependency {
 
   fn set_request(&mut self, request: String) {
     self.request = request;
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }

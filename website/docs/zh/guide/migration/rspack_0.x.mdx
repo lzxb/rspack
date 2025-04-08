@@ -6,7 +6,7 @@
 
 ## 配置项默认值调整
 
-在 Rspack 1.x 中，我们对齐了 Webpack 的配置项默认值。
+在 Rspack 1.x 中，我们对齐了 webpack 的配置项默认值。
 
 ### [重要] experiments.css
 
@@ -16,8 +16,8 @@
 
 如果你依赖内置功能来处理 CSS 文件而不使用任何 loader，或者使用了如下的配置来处理 CSS 文件：
 
-```js title=rspack.config.js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   module: {
     rules: [
       {
@@ -75,7 +75,7 @@ module.exports = {
 请使用 [resolve.tsConfig](/config/resolve#resolvetsconfig) 代替。
 
 ```diff
-module.exports = {
+export default {
   resolve: {
 -   tsConfigPath: path.resolve(__dirname, './tsconfig.json'),
 +   tsConfig: path.resolve(__dirname, './tsconfig.json'),
@@ -208,7 +208,9 @@ export default {
 如果你之前手动注册并配置 `rspack.SwcCssMinimizerRspackPlugin`，现在需要使用 `rspack.LightningCssMinimizerRspackPlugin`：
 
 ```diff
-module.exports = {
+import { rspack } from '@rspack/core';
+
+export default {
   optimization: {
     minimizer: [
 -     new rspack.SwcCssMinimizerRspackPlugin({
@@ -252,7 +254,7 @@ module.exports = {
 - webpack-dev-server v5 最低支持的 Node.js 版本为 18.12.0。
 - 配置选项发生了若干变更，请参阅 [webpack-dev-server v5 的迁移指南](https://github.com/webpack/webpack-dev-server/blob/master/migration-v5.md)。
 
-### [重要] ResolverFactory 和 Resolver 使用 Rust 重构
+### [重要] `ResolverFactory` 和 `Resolver` 使用 Rust 重构
 
 `ResolverFactory` 和 `Resolver` 已被使用 Rust 进行重构，以统一 JS 侧和 Rust 侧的实现。由于这一变更，目前 ResolverFactory 和 Resolver 并不支持任何钩子。
 

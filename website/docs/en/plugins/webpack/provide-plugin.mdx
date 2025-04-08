@@ -27,7 +27,7 @@ By default, module resolution path is current folder (`./**`) and `node_modules`
 It is also possible to specify full path:
 
 ```js
-const path = require('path');
+const path = require('node:path');
 
 new rspack.ProvidePlugin({
   identifier: path.resolve(path.join(__dirname, 'src/module1')),
@@ -45,7 +45,7 @@ For importing the default export of an ES2015 module, you have to specify the de
 
 ## Examples
 
-### Using process in the Browser
+### Using process in the browser
 
 Enable `process` object support within a browser context.
 
@@ -88,7 +88,7 @@ jQuery('#item'); // <= also works
 // $ is automatically set to the exports of module "jquery"
 ```
 
-### Lodash Map
+### Lodash map
 
 ```js
 new rspack.ProvidePlugin({

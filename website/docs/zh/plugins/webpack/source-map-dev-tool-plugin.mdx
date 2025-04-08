@@ -119,15 +119,17 @@ new rspack.SourceMapDevToolPlugin(options);
 
 你可以使用以下代码将配置项 devtool: inline-source-map 替换为等效的自定义插件配置：
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+import { rspack } from '@rspack/core';
+
+export default {
   // ...
   devtool: false,
   plugins: [new rspack.SourceMapDevToolPlugin({})],
 };
 ```
 
-### 排除 Vendor Maps
+### 排除 Vendor maps
 
 以下代码会排除 vendor.js bundle 内模块的 source map。
 

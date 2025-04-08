@@ -5,7 +5,7 @@ use rspack_sources::BoxSource;
 
 use crate::{old_cache::storage, Chunk, Compilation, SourceType};
 
-type Storage = dyn storage::Storage<(BoxSource, Vec<Diagnostic>)>;
+type Storage = dyn storage::Storage<BoxSource>;
 
 #[derive(Debug)]
 pub struct ChunkRenderOccasion {
@@ -15,6 +15,12 @@ pub struct ChunkRenderOccasion {
 impl ChunkRenderOccasion {
   pub fn new(storage: Option<Box<Storage>>) -> Self {
     Self { storage }
+  }
+
+  pub fn begin_idle(&self) {
+    if let Some(s) = &self.storage {
+      s.begin_idle();
+    }
   }
 
   pub async fn use_cache<G, F>(
@@ -35,16 +41,16 @@ impl ChunkRenderOccasion {
     };
 
     let Some(content_hash) =
-      chunk.content_hash_by_source_type(&compilation.chunk_hashes_results, source_type)
+      chunk.content_hash_by_source_type(&compilation.chunk_hashes_artifact, source_type)
     else {
       return generator().await;
     };
     let cache_key = Identifier::from(content_hash.encoded());
     if let Some(value) = storage.get(&cache_key) {
-      Ok(value)
+      Ok((value, Vec::new()))
     } else {
       let res = generator().await?;
-      storage.set(cache_key, res.clone());
+      storage.set(cache_key, res.0.clone());
       Ok(res)
     }
   }

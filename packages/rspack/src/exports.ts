@@ -27,9 +27,12 @@ export { RspackOptionsApply, RspackOptionsApply as WebpackOptionsApply };
 
 export type { Chunk } from "./Chunk";
 export type { ChunkGroup } from "./ChunkGroup";
-export type { Module, ResolveData } from "./Module";
+export type { Module, ResolveData, ResourceDataWithData } from "./Module";
 export { MultiStats } from "./MultiStats";
 export { NormalModule } from "./NormalModule";
+export { ContextModule } from "./ContextModule";
+export { ConcatenatedModule } from "./ConcatenatedModule";
+export { ExternalModule } from "./ExternalModule";
 export type { NormalModuleFactory } from "./NormalModuleFactory";
 export { RuntimeGlobals } from "./RuntimeGlobals";
 export type {
@@ -41,6 +44,11 @@ export type {
 } from "./Stats";
 export { Stats } from "./Stats";
 export { RuntimeModule } from "./RuntimeModule";
+export {
+	EntryDependency,
+	Dependency,
+	AsyncDependenciesBlock
+} from "@rspack/binding";
 
 // API extractor not working with some re-exports, see: https://github.com/microsoft/fluentui/issues/20694
 import * as ModuleFilenameHelpers from "./lib/ModuleFilenameHelpers";
@@ -54,6 +62,7 @@ export const WebpackError = Error;
 export type { Watching } from "./Watching";
 
 import sources = require("webpack-sources");
+
 export { sources };
 
 import {
@@ -78,10 +87,12 @@ export const config: Config = {
 export type * from "./config";
 
 import { ValidationError } from "./util/validate";
+
 export { ValidationError };
 
 import { cachedCleverMerge as cleverMerge } from "./util/cleverMerge";
 import { createHash } from "./util/createHash";
+
 export const util = { createHash, cleverMerge };
 
 export { default as EntryOptionPlugin } from "./lib/EntryOptionPlugin";
@@ -103,6 +114,8 @@ export { DynamicEntryPlugin } from "./builtin-plugin";
 export { ExternalsPlugin } from "./builtin-plugin";
 export { HotModuleReplacementPlugin } from "./builtin-plugin";
 export { NoEmitOnErrorsPlugin } from "./builtin-plugin";
+export { WarnCaseSensitiveModulesPlugin } from "./builtin-plugin";
+export { RuntimePlugin } from "./builtin-plugin";
 export { DllPlugin, type DllPluginOptions } from "./lib/DllPlugin";
 export {
 	DllReferencePlugin,
@@ -116,10 +129,15 @@ export { LoaderOptionsPlugin } from "./lib/LoaderOptionsPlugin";
 export { LoaderTargetPlugin } from "./lib/LoaderTargetPlugin";
 export { NormalModuleReplacementPlugin } from "./lib/NormalModuleReplacementPlugin";
 
-import { FetchCompileAsyncWasmPlugin } from "./builtin-plugin";
+import {
+	FetchCompileAsyncWasmPlugin,
+	SubresourceIntegrityPlugin,
+	lazyCompilationMiddleware
+} from "./builtin-plugin";
 interface Web {
 	FetchCompileAsyncWasmPlugin: typeof FetchCompileAsyncWasmPlugin;
 }
+
 export const web: Web = {
 	FetchCompileAsyncWasmPlugin
 };
@@ -127,11 +145,13 @@ export const web: Web = {
 import { NodeTargetPlugin } from "./builtin-plugin";
 import NodeEnvironmentPlugin from "./node/NodeEnvironmentPlugin";
 import NodeTemplatePlugin from "./node/NodeTemplatePlugin";
+
 interface Node {
 	NodeTargetPlugin: typeof NodeTargetPlugin;
 	NodeTemplatePlugin: typeof NodeTemplatePlugin;
 	NodeEnvironmentPlugin: typeof NodeEnvironmentPlugin;
 }
+
 export const node: Node = {
 	NodeTargetPlugin,
 	NodeTemplatePlugin,
@@ -139,52 +159,64 @@ export const node: Node = {
 };
 
 import { ElectronTargetPlugin } from "./builtin-plugin";
+
 interface Electron {
 	ElectronTargetPlugin: typeof ElectronTargetPlugin;
 }
+
 export const electron: Electron = { ElectronTargetPlugin };
 
 import { EnableLibraryPlugin } from "./builtin-plugin";
+
 interface Library {
 	EnableLibraryPlugin: typeof EnableLibraryPlugin;
 }
+
 export const library: Library = { EnableLibraryPlugin };
 
 import { EnableWasmLoadingPlugin } from "./builtin-plugin";
+
 interface Wasm {
 	EnableWasmLoadingPlugin: typeof EnableWasmLoadingPlugin;
 }
+
 export const wasm: Wasm = { EnableWasmLoadingPlugin };
 
 import {
 	EnableChunkLoadingPlugin,
 	JavascriptModulesPlugin
 } from "./builtin-plugin";
+
 interface JavaScript {
 	EnableChunkLoadingPlugin: typeof EnableChunkLoadingPlugin;
 	JavascriptModulesPlugin: typeof JavascriptModulesPlugin;
 }
+
 export const javascript: JavaScript = {
 	EnableChunkLoadingPlugin,
 	JavascriptModulesPlugin
 };
 
 import { WebWorkerTemplatePlugin } from "./builtin-plugin";
+
 interface Webworker {
 	WebWorkerTemplatePlugin: typeof WebWorkerTemplatePlugin;
 }
+
 export const webworker: Webworker = { WebWorkerTemplatePlugin };
 
 import { LimitChunkCountPlugin } from "./builtin-plugin";
 import { RuntimeChunkPlugin } from "./builtin-plugin";
 import { SplitChunksPlugin } from "./builtin-plugin";
 import { RemoveDuplicateModulesPlugin } from "./builtin-plugin";
+import { RsdoctorPlugin } from "./builtin-plugin";
 
 interface Optimize {
 	LimitChunkCountPlugin: typeof LimitChunkCountPlugin;
 	RuntimeChunkPlugin: typeof RuntimeChunkPlugin;
 	SplitChunksPlugin: typeof SplitChunksPlugin;
 }
+
 export const optimize: Optimize = {
 	LimitChunkCountPlugin,
 	RuntimeChunkPlugin,
@@ -192,11 +224,14 @@ export const optimize: Optimize = {
 };
 
 import { ModuleFederationPlugin } from "./container/ModuleFederationPlugin";
+
 export type { ModuleFederationPluginOptions } from "./container/ModuleFederationPlugin";
 import { ModuleFederationPluginV1 } from "./container/ModuleFederationPluginV1";
+
 export type { ModuleFederationPluginV1Options } from "./container/ModuleFederationPluginV1";
 import { ContainerPlugin } from "./container/ContainerPlugin";
 import { ContainerReferencePlugin } from "./container/ContainerReferencePlugin";
+
 export type {
 	ContainerPluginOptions,
 	Exposes,
@@ -223,6 +258,7 @@ export const container = {
 import { ConsumeSharedPlugin } from "./sharing/ConsumeSharedPlugin";
 import { ProvideSharedPlugin } from "./sharing/ProvideSharedPlugin";
 import { SharePlugin } from "./sharing/SharePlugin";
+
 export type {
 	Consumes,
 	ConsumesConfig,
@@ -251,9 +287,11 @@ export const sharing = {
 };
 
 ///// Rspack Postfixed Internal Plugins /////
+export type { RsdoctorPluginData, RsdoctorPluginHooks } from "./builtin-plugin";
 export type { HtmlRspackPluginOptions } from "./builtin-plugin";
 export type { SwcJsMinimizerRspackPluginOptions } from "./builtin-plugin";
 export type { LightningCssMinimizerRspackPluginOptions } from "./builtin-plugin";
+export type { CircularDependencyRspackPluginOptions } from "./builtin-plugin";
 export type { CopyRspackPluginOptions } from "./builtin-plugin";
 export type { SourceMapDevToolPluginOptions } from "./builtin-plugin";
 export type { EvalDevToolModulePluginOptions } from "./builtin-plugin";
@@ -264,6 +302,7 @@ export type {
 export { HtmlRspackPlugin } from "./builtin-plugin";
 export { SwcJsMinimizerRspackPlugin } from "./builtin-plugin";
 export { LightningCssMinimizerRspackPlugin } from "./builtin-plugin";
+export { CircularDependencyRspackPlugin } from "./builtin-plugin";
 export { CopyRspackPlugin } from "./builtin-plugin";
 export { SourceMapDevToolPlugin } from "./builtin-plugin";
 export { EvalSourceMapDevToolPlugin } from "./builtin-plugin";
@@ -288,20 +327,59 @@ export type {
 	FeatureOptions as LightningcssFeatureOptions
 } from "./builtin-loader/lightningcss/index";
 
+export type { SubresourceIntegrityPluginOptions } from "./builtin-plugin";
+
 ///// Experiments Stuff /////
 import { cleanupGlobalTrace, registerGlobalTrace } from "@rspack/binding";
+
 interface Experiments {
 	globalTrace: {
-		register: typeof registerGlobalTrace;
-		cleanup: typeof cleanupGlobalTrace;
+		register: (
+			filter: string,
+			layer: "chrome" | "logger" | "otel",
+			output: string
+		) => Promise<void>;
+		cleanup: () => Promise<void>;
 	};
 	RemoveDuplicateModulesPlugin: typeof RemoveDuplicateModulesPlugin;
+	RsdoctorPlugin: typeof RsdoctorPlugin;
+	SubresourceIntegrityPlugin: typeof SubresourceIntegrityPlugin;
+	lazyCompilationMiddleware: typeof lazyCompilationMiddleware;
 }
 
 export const experiments: Experiments = {
 	globalTrace: {
-		register: registerGlobalTrace,
-		cleanup: cleanupGlobalTrace
+		async register(filter, layer, output) {
+			registerGlobalTrace(filter, layer, output);
+			if (layer === "otel") {
+				try {
+					const { initOpenTelemetry } = await import("@rspack/tracing");
+					await initOpenTelemetry();
+				} catch (error) {
+					console.error(
+						"Failed to import `@rspack/tracing` package. Please install `@rspack/tracing` to enable OpenTelemetry tracing.",
+						error
+					);
+				}
+			}
+		},
+		async cleanup() {
+			cleanupGlobalTrace();
+			try {
+				const { shutdownOpenTelemetry } = await import("@rspack/tracing");
+				await shutdownOpenTelemetry();
+			} catch (error) {
+				// ignore cleanup tracing error
+			}
+		}
 	},
-	RemoveDuplicateModulesPlugin
+	RemoveDuplicateModulesPlugin,
+	/**
+	 * Note: This plugin is unstable yet
+	 *
+	 * @internal
+	 */
+	RsdoctorPlugin,
+	SubresourceIntegrityPlugin,
+	lazyCompilationMiddleware
 };

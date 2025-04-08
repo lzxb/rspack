@@ -1,16 +1,20 @@
 mod option;
 mod strategy;
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
+use futures::future::join_all;
 use rspack_cacheable::{from_bytes, to_bytes};
-use rspack_fs::FileSystem;
-use rspack_paths::Utf8PathBuf;
+use rspack_error::Result;
+use rspack_fs::ReadableFileSystem;
+use rspack_paths::{ArcPath, AssertUtf8};
 use rustc_hash::FxHashSet as HashSet;
+use tokio::task::spawn_blocking;
 
 pub use self::option::{PathMatcher, SnapshotOptions};
 use self::strategy::{Strategy, StrategyHelper, ValidateResult};
 use super::storage::Storage;
+use crate::FutureConsumer;
 
 const SCOPE: &str = "snapshot";
 
@@ -21,16 +25,16 @@ const SCOPE: &str = "snapshot";
 #[derive(Debug)]
 pub struct Snapshot {
   options: SnapshotOptions,
-  // TODO
-  // 1. update compiler.input_file_system to async file system
-  // 2. update this fs to AsyncReadableFileSystem
-  // 3. update add/calc_modified_files to async fn
-  fs: Arc<dyn FileSystem>,
+  fs: Arc<dyn ReadableFileSystem>,
   storage: Arc<dyn Storage>,
 }
 
 impl Snapshot {
-  pub fn new(options: SnapshotOptions, fs: Arc<dyn FileSystem>, storage: Arc<dyn Storage>) -> Self {
+  pub fn new(
+    options: SnapshotOptions,
+    fs: Arc<dyn ReadableFileSystem>,
+    storage: Arc<dyn Storage>,
+  ) -> Self {
     Self {
       options,
       fs,
@@ -38,54 +42,79 @@ impl Snapshot {
     }
   }
 
-  pub fn add(&self, paths: impl Iterator<Item = &Utf8PathBuf>) {
+  #[tracing::instrument("Cache::Snapshot::add", skip_all)]
+  pub async fn add(&self, paths: impl Iterator<Item = &Path>) {
     let default_strategy = StrategyHelper::compile_time();
-    let mut helper = StrategyHelper::new(self.fs.clone());
-    // TODO use multi thread
+    let helper = StrategyHelper::new(self.fs.clone());
+
     // TODO merge package version file
-    for path in paths {
-      // TODO check path exists
-      // TODO directory check all sub file
-      let path_str = path.as_str();
+    join_all(paths.map(|path| async {
+      let utf8_path = path.assert_utf8();
+      // check path exists
+      let fs = self.fs.clone();
+      let utf8_path_clone = utf8_path.to_owned();
+      let metadata_has_error =
+        spawn_blocking(move || fs.clone().metadata(&utf8_path_clone).is_err())
+          .await
+          .unwrap_or(true);
+      if metadata_has_error {
+        return;
+      }
+      // TODO directory path should check all sub file
+      let path_str = utf8_path.as_str();
       if self.options.is_immutable_path(path_str) {
-        continue;
+        return;
       }
       if self.options.is_managed_path(path_str) {
-        if let Some(v) = helper.package_version(path) {
+        if let Some(v) = helper.package_version(path).await {
           self.storage.set(
             SCOPE,
-            path_str.as_bytes().to_vec(),
+            path.as_os_str().as_encoded_bytes().to_vec(),
             to_bytes::<_, ()>(&v, &()).expect("should to bytes success"),
           );
-          continue;
+          return;
         }
       }
       // compiler time
       self.storage.set(
         SCOPE,
-        path_str.as_bytes().to_vec(),
+        path.as_os_str().as_encoded_bytes().to_vec(),
         to_bytes::<_, ()>(&default_strategy, &()).expect("should to bytes success"),
       );
-    }
+    }))
+    .await;
   }
 
-  pub fn remove(&self, paths: impl Iterator<Item = &Utf8PathBuf>) {
+  pub fn remove(&self, paths: impl Iterator<Item = &Path>) {
     for item in paths {
-      self.storage.remove(SCOPE, item.as_str().as_bytes())
+      self
+        .storage
+        .remove(SCOPE, item.as_os_str().as_encoded_bytes())
     }
   }
 
-  pub fn calc_modified_paths(&self) -> (HashSet<Utf8PathBuf>, HashSet<Utf8PathBuf>) {
-    let mut helper = StrategyHelper::new(self.fs.clone());
+  #[tracing::instrument("Cache::Snapshot::calc_modified_path", skip_all)]
+  pub async fn calc_modified_paths(&self) -> Result<(HashSet<ArcPath>, HashSet<ArcPath>)> {
     let mut modified_path = HashSet::default();
     let mut deleted_path = HashSet::default();
+    let helper = Arc::new(StrategyHelper::new(self.fs.clone()));
 
-    // TODO use multi thread
-    for (key, value) in self.storage.get_all(SCOPE) {
-      let path = Utf8PathBuf::from(String::from_utf8(key).expect("should have utf8 key"));
-      let strategy: Strategy =
-        from_bytes::<Strategy, ()>(&value, &()).expect("should from bytes success");
-      match helper.validate(&path, &strategy) {
+    self
+      .storage
+      .load(SCOPE)
+      .await?
+      .into_iter()
+      .map(|(key, value)| {
+        let helper = helper.clone();
+        async move {
+          let path: ArcPath = Path::new(&*String::from_utf8_lossy(&key)).into();
+          let strategy: Strategy =
+            from_bytes::<Strategy, ()>(&value, &()).expect("should from bytes success");
+          let validate = helper.validate(&path, &strategy).await;
+          (path, validate)
+        }
+      })
+      .fut_consume(|(path, validate)| match validate {
         ValidateResult::Modified => {
           modified_path.insert(path);
         }
@@ -93,9 +122,10 @@ impl Snapshot {
           deleted_path.insert(path);
         }
         ValidateResult::NoChanged => {}
-      }
-    }
-    (modified_path, deleted_path)
+      })
+      .await;
+
+    Ok((modified_path, deleted_path))
   }
 }
 
@@ -104,12 +134,16 @@ mod tests {
   use std::sync::Arc;
 
   use rspack_fs::{MemoryFileSystem, WritableFileSystem};
-  use rspack_paths::Utf8PathBuf;
 
-  use super::super::MemoryStorage;
-  use super::{PathMatcher, Snapshot, SnapshotOptions};
+  use super::{super::storage::MemoryStorage, PathMatcher, Snapshot, SnapshotOptions};
 
-  #[tokio::test]
+  macro_rules! p {
+    ($tt:tt) => {
+      std::path::Path::new($tt)
+    };
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
   async fn should_snapshot_work() {
     let fs = Arc::new(MemoryFileSystem::default());
     let storage = Arc::new(MemoryStorage::default());
@@ -147,15 +181,18 @@ mod tests {
       .unwrap();
 
     let snapshot = Snapshot::new(options, fs.clone(), storage);
-    snapshot.add(
-      [
-        "/file1".into(),
-        "/constant".into(),
-        "/node_modules/project/file1".into(),
-        "/node_modules/lib/file1".into(),
-      ]
-      .iter(),
-    );
+
+    snapshot
+      .add(
+        [
+          p!("/file1"),
+          p!("/constant"),
+          p!("/node_modules/project/file1"),
+          p!("/node_modules/lib/file1"),
+        ]
+        .into_iter(),
+      )
+      .await;
     std::thread::sleep(std::time::Duration::from_millis(100));
     fs.write("/file1".into(), "abcd".as_bytes()).await.unwrap();
     fs.write("/constant".into(), "abcd".as_bytes())
@@ -168,12 +205,12 @@ mod tests {
       .await
       .unwrap();
 
-    let (modified_paths, deleted_paths) = snapshot.calc_modified_paths();
+    let (modified_paths, deleted_paths) = snapshot.calc_modified_paths().await.unwrap();
     assert!(deleted_paths.is_empty());
-    assert!(!modified_paths.contains(&Utf8PathBuf::from("/constant")));
-    assert!(modified_paths.contains(&Utf8PathBuf::from("/file1")));
-    assert!(modified_paths.contains(&Utf8PathBuf::from("/node_modules/project/file1")));
-    assert!(!modified_paths.contains(&Utf8PathBuf::from("/node_modules/lib/file1")));
+    assert!(!modified_paths.contains(p!("/constant")));
+    assert!(modified_paths.contains(p!("/file1")));
+    assert!(modified_paths.contains(p!("/node_modules/project/file1")));
+    assert!(!modified_paths.contains(p!("/node_modules/lib/file1")));
 
     fs.write(
       "/node_modules/lib/package.json".into(),
@@ -181,12 +218,12 @@ mod tests {
     )
     .await
     .unwrap();
-    snapshot.add(["/file1".into()].iter());
-    let (modified_paths, deleted_paths) = snapshot.calc_modified_paths();
+    snapshot.add([p!("/file1")].into_iter()).await;
+    let (modified_paths, deleted_paths) = snapshot.calc_modified_paths().await.unwrap();
     assert!(deleted_paths.is_empty());
-    assert!(!modified_paths.contains(&Utf8PathBuf::from("/constant")));
-    assert!(!modified_paths.contains(&Utf8PathBuf::from("/file1")));
-    assert!(modified_paths.contains(&Utf8PathBuf::from("/node_modules/project/file1")));
-    assert!(modified_paths.contains(&Utf8PathBuf::from("/node_modules/lib/file1")));
+    assert!(!modified_paths.contains(p!("/constant")));
+    assert!(!modified_paths.contains(p!("/file1")));
+    assert!(modified_paths.contains(p!("/node_modules/project/file1")));
+    assert!(modified_paths.contains(p!("/node_modules/lib/file1")));
   }
 }

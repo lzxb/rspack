@@ -1,15 +1,22 @@
 use itertools::Itertools;
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsPreset, AsVec},
+};
 use rspack_core::{
-  AsDependency, Compilation, DependencyTemplate, ExportProvided, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource, UsageState, UsedExports, UsedName,
+  DependencyTemplate, ExportProvided, TemplateContext, TemplateReplaceSource, UsageState,
+  UsedExports, UsedName,
 };
 use swc_core::ecma::atoms::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ExportInfoDependency {
   start: u32,
   end: u32,
+  #[cacheable(with=AsVec<AsPreset>)]
   export_name: Vec<Atom>,
+  #[cacheable(with=AsPreset)]
   property: Atom,
 }
 
@@ -24,6 +31,7 @@ impl ExportInfoDependency {
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ExportInfoDependency {
   fn apply(&self, source: &mut TemplateReplaceSource, context: &mut TemplateContext) {
     let value = self.get_property(context);
@@ -33,18 +41,6 @@ impl DependencyTemplate for ExportInfoDependency {
       value.unwrap_or("undefined".to_owned()).as_str(),
       None,
     );
-  }
-
-  fn dependency_id(&self) -> Option<rspack_core::DependencyId> {
-    None
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 
@@ -129,4 +125,3 @@ impl ExportInfoDependency {
     }
   }
 }
-impl AsDependency for ExportInfoDependency {}

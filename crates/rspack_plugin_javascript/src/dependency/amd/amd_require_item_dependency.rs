@@ -1,25 +1,30 @@
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_core::{
-  module_raw, AffectType, AsContextDependency, Compilation, Dependency, DependencyCategory,
-  DependencyId, DependencyTemplate, DependencyType, ModuleDependency, RuntimeSpec, TemplateContext,
+  module_raw, AffectType, AsContextDependency, Dependency, DependencyCategory, DependencyId,
+  DependencyTemplate, DependencyType, FactorizeInfo, ModuleDependency, TemplateContext,
   TemplateReplaceSource,
 };
 use rspack_util::atom::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct AMDRequireItemDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
-  range: (u32, u32),
+  range: Option<(u32, u32)>,
   optional: bool,
+  factorize_info: FactorizeInfo,
 }
 
 impl AMDRequireItemDependency {
-  pub fn new(request: Atom, range: (u32, u32)) -> Self {
+  pub fn new(request: Atom, range: Option<(u32, u32)>) -> Self {
     Self {
       id: DependencyId::new(),
       request,
       range,
       optional: false,
+      factorize_info: Default::default(),
     }
   }
 
@@ -28,6 +33,7 @@ impl AMDRequireItemDependency {
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for AMDRequireItemDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -46,12 +52,16 @@ impl Dependency for AMDRequireItemDependency {
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for AMDRequireItemDependency {
   fn apply(
     &self,
     source: &mut TemplateReplaceSource,
     code_generatable_context: &mut TemplateContext,
   ) {
+    let Some(range) = &self.range else {
+      return;
+    };
     // ModuleDependencyTemplateAsRequireId
     let content = module_raw(
       code_generatable_context.compilation,
@@ -60,22 +70,11 @@ impl DependencyTemplate for AMDRequireItemDependency {
       &self.request,
       self.weak(),
     );
-    source.replace(self.range.0, self.range.1, &content, None);
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
+    source.replace(range.0, range.1, &content, None);
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for AMDRequireItemDependency {
   fn request(&self) -> &str {
     &self.request
@@ -83,6 +82,14 @@ impl ModuleDependency for AMDRequireItemDependency {
 
   fn get_optional(&self) -> bool {
     self.optional
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 

@@ -3,12 +3,11 @@
 #![feature(iter_intersperse)]
 #![feature(box_patterns)]
 #![feature(anonymous_lifetime_in_impl_trait)]
-#![feature(hash_raw_entry)]
-#![feature(option_get_or_insert_default)]
+#![feature(async_trait_bounds)]
 
 use std::{fmt, sync::Arc};
-mod cgm_hash_results;
-mod cgm_runtime_requirement_results;
+mod artifacts;
+pub use artifacts::*;
 mod dependencies_block;
 pub mod diagnostics;
 pub mod incremental;
@@ -19,6 +18,8 @@ mod fake_namespace_object;
 mod template;
 pub use fake_namespace_object::*;
 pub use template::Template;
+mod runtime_template;
+pub use runtime_template::*;
 mod module_profile;
 pub use module_profile::*;
 use rspack_collections::Database;
@@ -74,15 +75,13 @@ use ustr::Ustr;
 pub use utils::*;
 mod chunk_graph;
 pub use chunk_graph::*;
-mod build_chunk_graph;
+pub mod build_chunk_graph;
 mod stats;
 pub use stats::*;
 mod runtime;
 mod runtime_module;
 pub use runtime::*;
 pub use runtime_module::*;
-mod code_generation_results;
-pub use code_generation_results::*;
 mod entrypoint;
 pub use entrypoint::*;
 mod loader;
@@ -98,6 +97,7 @@ pub use resolver::*;
 pub mod concatenated_module;
 pub mod reserved_names;
 
+use rspack_cacheable::{cacheable, with::AsPreset};
 pub use rspack_loader_runner::{
   get_scheme, parse_resource, AdditionalData, ResourceData, ResourceParsedData, Scheme,
   BUILTIN_LOADER_PREFIX,
@@ -108,6 +108,7 @@ pub use rspack_sources;
 #[cfg(debug_assertions)]
 pub mod debug_info;
 
+#[cacheable]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceType {
   JavaScript,
@@ -118,7 +119,7 @@ pub enum SourceType {
   Remote,
   ShareInit,
   ConsumeShared,
-  Custom(Ustr),
+  Custom(#[cacheable(with=AsPreset)] Ustr),
   #[default]
   Unknown,
   CssImport,
@@ -162,6 +163,7 @@ impl From<&str> for SourceType {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleType {
   Json,
@@ -183,7 +185,7 @@ pub enum ModuleType {
   ProvideShared,
   ConsumeShared,
   SelfReference,
-  Custom(Ustr),
+  Custom(#[cacheable(with=AsPreset)] Ustr),
 }
 
 impl ModuleType {
@@ -312,7 +314,7 @@ impl ChunkByUkey {
   pub fn get_many_mut<const N: usize>(
     &mut self,
     ukeys: [&ChunkUkey; N],
-  ) -> Option<[&mut Chunk; N]> {
+  ) -> [Option<&mut Chunk>; N] {
     self.inner.get_many_mut(ukeys)
   }
 
@@ -363,6 +365,14 @@ impl ChunkByUkey {
   pub fn iter_mut(&mut self) -> impl Iterator<Item = (&ChunkUkey, &mut Chunk)> {
     self.inner.iter_mut()
   }
+
+  pub fn len(&self) -> usize {
+    self.inner.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.inner.is_empty()
+  }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -382,7 +392,7 @@ impl ChunkGroupByUkey {
   pub fn get_many_mut<const N: usize>(
     &mut self,
     ukeys: [&ChunkGroupUkey; N],
-  ) -> Option<[&mut ChunkGroup; N]> {
+  ) -> [Option<&mut ChunkGroup>; N] {
     self.inner.get_many_mut(ukeys)
   }
 

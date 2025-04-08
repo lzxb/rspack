@@ -5,7 +5,7 @@ use rspack_collections::{IdentifierMap, IdentifierSet};
 use rspack_core::{
   incremental::IncrementalPasses, ApplyContext, BuildMetaExportsType, Compilation,
   CompilationFinishModules, CompilerOptions, DependenciesBlock, DependencyId, ExportInfoProvided,
-  ExportNameOrSpec, ExportsInfo, ExportsOfExportsSpec, ExportsSpec, ModuleGraph,
+  ExportNameOrSpec, ExportsInfo, ExportsOfExportsSpec, ExportsSpec, Logger, ModuleGraph,
   ModuleGraphConnection, ModuleIdentifier, Plugin, PluginContext,
 };
 use rspack_error::Result;
@@ -46,11 +46,8 @@ impl<'a> FlagDependencyExportsState<'a> {
         .mg
         .module_by_identifier(&module_id)
         .expect("should have module");
-      let is_module_without_exports = if let Some(build_meta) = module.build_meta() {
-        build_meta.exports_type == BuildMetaExportsType::Unset
-      } else {
-        true
-      };
+      let is_module_without_exports =
+        module.build_meta().exports_type == BuildMetaExportsType::Unset;
       if is_module_without_exports {
         let other_exports_info = exports_info.other_exports_info(self.mg);
         if !matches!(
@@ -63,12 +60,7 @@ impl<'a> FlagDependencyExportsState<'a> {
         }
       }
 
-      if !module
-        .build_info()
-        .as_ref()
-        .map(|item| item.hash.is_some())
-        .unwrap_or_default()
-      {
+      if module.build_info().hash.is_none() {
         exports_info.set_has_provide_info(self.mg);
         q.enqueue(module_id);
         continue;
@@ -94,7 +86,7 @@ impl<'a> FlagDependencyExportsState<'a> {
     }
   }
 
-  #[tracing::instrument(skip_all, fields(module = ?self.current_module_id))]
+  // #[tracing::instrument(skip_all, fields(module = ?self.current_module_id))]
   pub fn notify_dependencies(&mut self, q: &mut Queue<ModuleIdentifier>) {
     if let Some(set) = self.dependencies.get(&self.current_module_id) {
       for mi in set.iter() {
@@ -312,7 +304,7 @@ impl<'a> FlagDependencyExportsState<'a> {
       if let Some(target) = target {
         let target_module_exports_info = self.mg.get_exports_info(&target.module);
         target_exports_info =
-          target_module_exports_info.get_nested_exports_info(self.mg, target.export);
+          target_module_exports_info.get_nested_exports_info(self.mg, target.export.as_deref());
         match self.dependencies.entry(target.module) {
           Entry::Occupied(mut occ) => {
             occ.get_mut().insert(self.current_module_id);
@@ -358,7 +350,14 @@ async fn finish_modules(&self, compilation: &mut Compilation) -> Result<()> {
     .incremental
     .mutations_read(IncrementalPasses::PROVIDED_EXPORTS)
   {
-    mutations.get_affected_modules_with_module_graph(&compilation.get_module_graph())
+    let modules = mutations.get_affected_modules_with_module_graph(&compilation.get_module_graph());
+    let logger = compilation.get_logger("rspack.incremental.providedExports");
+    logger.log(format!(
+      "{} modules are affected, {} in total",
+      modules.len(),
+      compilation.get_module_graph().modules().len()
+    ));
+    modules
   } else {
     compilation
       .get_module_graph()

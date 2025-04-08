@@ -11,18 +11,16 @@ use cow_utils::CowUtils;
 use itertools::Itertools;
 use rayon::prelude::*;
 use rspack_core::{
-  parse_to_url,
-  rspack_sources::{RawSource, SourceExt},
-  AssetInfo, Compilation, CompilationAsset, Filename, NoFilenameFn, PathData,
+  rspack_sources::{RawBufferSource, RawStringSource, SourceExt},
+  AssetInfo, Compilation, CompilationAsset, Filename, PathData,
 };
-use rspack_error::{miette, AnyhowError};
+use rspack_error::{miette, AnyhowResultToRspackResultExt, Result};
 use rspack_paths::Utf8PathBuf;
-use rspack_util::infallible::ResultInfallibleExt;
 use serde::{Deserialize, Serialize};
 use sugar_path::SugarPath;
 
 use crate::{
-  config::{HtmlInject, HtmlRspackPluginOptions, HtmlScriptLoading},
+  config::{HtmlChunkSortMode, HtmlInject, HtmlRspackPluginOptions, HtmlScriptLoading},
   sri::{add_sri, create_digest_from_asset},
   tag::HtmlPluginTag,
 };
@@ -35,33 +33,49 @@ pub struct HtmlPluginAssets {
   pub css: Vec<String>,
   pub favicon: Option<String>,
   // manifest: Option<String>,
+  pub js_integrity: Option<Vec<Option<String>>>,
+  pub css_integrity: Option<Vec<Option<String>>>,
 }
 
 impl HtmlPluginAssets {
-  pub fn create_assets<'a>(
+  pub async fn create_assets<'a>(
     config: &HtmlRspackPluginOptions,
     compilation: &'a Compilation,
     public_path: &str,
     output_path: &Utf8PathBuf,
-    html_file_name: &Filename<NoFilenameFn>,
-  ) -> (HtmlPluginAssets, HashMap<String, &'a CompilationAsset>) {
-    let mut assets = HtmlPluginAssets::default();
+    html_file_name: &Filename,
+  ) -> Result<(HtmlPluginAssets, HashMap<String, &'a CompilationAsset>)> {
+    let mut assets: HtmlPluginAssets = HtmlPluginAssets::default();
     let mut asset_map = HashMap::new();
     assets.public_path = public_path.to_string();
 
-    let included_assets = compilation
-      .entrypoints
-      .keys()
-      .filter(|&entry_name| {
-        let mut included = true;
-        if let Some(included_chunks) = &config.chunks {
-          included = included_chunks.iter().any(|c| c.eq(entry_name));
-        }
-        if let Some(exclude_chunks) = &config.exclude_chunks {
-          included = included && !exclude_chunks.iter().any(|c| c.eq(entry_name));
-        }
-        included
-      })
+    let sorted_entry_names: Vec<&String> =
+      if matches!(config.chunks_sort_mode, HtmlChunkSortMode::Manual)
+        && let Some(chunks) = &config.chunks
+      {
+        chunks
+          .iter()
+          .filter(|&name| compilation.entrypoints.contains_key(name))
+          .collect()
+      } else {
+        compilation
+          .entrypoints
+          .keys()
+          .filter(|&entry_name| {
+            let mut included = true;
+            if let Some(included_chunks) = &config.chunks {
+              included = included_chunks.iter().any(|c| c.eq(entry_name));
+            }
+            if let Some(exclude_chunks) = &config.exclude_chunks {
+              included = included && !exclude_chunks.iter().any(|c| c.eq(entry_name));
+            }
+            included
+          })
+          .collect()
+      };
+
+    let included_assets = sorted_entry_names
+      .iter()
       .map(|entry_name| compilation.entrypoint_by_name(entry_name))
       .flat_map(|entry| entry.get_files(&compilation.chunk_by_ukey))
       .filter_map(|asset_name| {
@@ -106,10 +120,14 @@ impl HtmlPluginAssets {
 
       let favicon_relative_path = PathBuf::from(config.get_relative_path(compilation, &favicon));
 
-      let mut favicon_path: PathBuf = PathBuf::from(config.get_public_path(
-        compilation,
-        favicon_relative_path.to_string_lossy().to_string().as_str(),
-      ));
+      let mut favicon_path: PathBuf = PathBuf::from(
+        config
+          .get_public_path(
+            compilation,
+            favicon_relative_path.to_string_lossy().to_string().as_str(),
+          )
+          .await,
+      );
 
       if favicon_path.to_str().unwrap_or_default().is_empty() {
         let fake_html_file_name = compilation
@@ -117,7 +135,7 @@ impl HtmlPluginAssets {
             html_file_name,
             PathData::default().filename(output_path.as_str()),
           )
-          .always_ok();
+          .await?;
         let output_path = compilation.options.output.path.as_std_path();
         favicon_path = output_path
           .relative(output_path.join(fake_html_file_name).join(".."))
@@ -139,7 +157,7 @@ impl HtmlPluginAssets {
       None
     };
 
-    (assets, asset_map)
+    Ok((assets, asset_map))
   }
 }
 
@@ -312,14 +330,13 @@ pub fn create_favicon_asset(
   config: &HtmlRspackPluginOptions,
   compilation: &Compilation,
 ) -> Result<(String, CompilationAsset), miette::Error> {
-  let url = parse_to_url(favicon);
   let favicon_file_path = PathBuf::from(config.get_relative_path(compilation, favicon))
     .file_name()
     .expect("Should have favicon file name")
     .to_string_lossy()
     .to_string();
 
-  let resolved_favicon = AsRef::<Path>::as_ref(&compilation.options.context).join(url.path());
+  let resolved_favicon = AsRef::<Path>::as_ref(&compilation.options.context).join(favicon);
 
   fs::read(resolved_favicon)
     .context(format!(
@@ -329,18 +346,18 @@ pub fn create_favicon_asset(
     .map(|content| {
       (
         favicon_file_path,
-        CompilationAsset::from(RawSource::from(content).boxed()),
+        CompilationAsset::from(RawBufferSource::from(content).boxed()),
       )
     })
-    .map_err(|err| miette::Error::from(AnyhowError::from(err)))
+    .to_rspack_result_from_anyhow()
 }
 
-pub fn create_html_asset(
-  output_file_name: &Filename<NoFilenameFn>,
+pub async fn create_html_asset(
+  output_file_name: &Filename,
   html: &str,
   template_file_name: &str,
   compilation: &Compilation,
-) -> (String, CompilationAsset) {
+) -> Result<(String, CompilationAsset)> {
   let hash = hash_for_source(html);
 
   let mut asset_info = AssetInfo::default();
@@ -352,12 +369,12 @@ pub fn create_html_asset(
         .content_hash(&hash),
       &mut asset_info,
     )
-    .always_ok();
+    .await?;
 
-  (
+  Ok((
     output_path,
-    CompilationAsset::new(Some(RawSource::from(html).boxed()), asset_info),
-  )
+    CompilationAsset::new(Some(RawStringSource::from(html).boxed()), asset_info),
+  ))
 }
 
 fn hash_for_source(source: &str) -> String {

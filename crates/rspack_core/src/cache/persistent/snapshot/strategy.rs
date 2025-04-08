@@ -1,12 +1,13 @@
 use std::{
+  path::Path,
   sync::Arc,
   time::{SystemTime, UNIX_EPOCH},
 };
 
+use dashmap::DashMap;
 use rspack_cacheable::cacheable;
-use rspack_fs::FileSystem;
-use rspack_paths::Utf8PathBuf;
-use rustc_hash::FxHashMap as HashMap;
+use rspack_fs::ReadableFileSystem;
+use rspack_paths::{ArcPath, AssertUtf8};
 
 /// Snapshot check strategy
 #[cacheable]
@@ -36,12 +37,12 @@ pub enum ValidateResult {
 }
 
 pub struct StrategyHelper {
-  fs: Arc<dyn FileSystem>,
-  package_version_cache: HashMap<Utf8PathBuf, Option<String>>,
+  fs: Arc<dyn ReadableFileSystem>,
+  package_version_cache: DashMap<ArcPath, Option<String>>,
 }
 
 impl StrategyHelper {
-  pub fn new(fs: Arc<dyn FileSystem>) -> Self {
+  pub fn new(fs: Arc<dyn ReadableFileSystem>) -> Self {
     Self {
       fs,
       package_version_cache: Default::default(),
@@ -49,8 +50,8 @@ impl StrategyHelper {
   }
 
   /// get path file modified time
-  fn modified_time(&self, path: &Utf8PathBuf) -> Option<u64> {
-    if let Ok(info) = self.fs.metadata(path) {
+  async fn modified_time(&self, path: &Path) -> Option<u64> {
+    if let Ok(info) = self.fs.metadata(path.assert_utf8()) {
       Some(info.mtime_ms)
     } else {
       None
@@ -58,13 +59,18 @@ impl StrategyHelper {
   }
 
   /// get path file version in package.json
-  fn package_version_with_cache(&mut self, path: &Utf8PathBuf) -> Option<String> {
+  #[async_recursion::async_recursion]
+  async fn package_version_with_cache(&self, path: &Path) -> Option<String> {
     if let Some(version) = self.package_version_cache.get(path) {
       return version.clone();
     }
 
     let mut res = None;
-    if let Ok(content) = self.fs.read(&path.join("package.json")) {
+    if let Ok(content) = self
+      .fs
+      .async_read(&path.join("package.json").assert_utf8())
+      .await
+    {
       if let Ok(mut package_json) =
         serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&content)
       {
@@ -76,11 +82,11 @@ impl StrategyHelper {
 
     if res.is_none() {
       if let Some(p) = path.parent() {
-        res = self.package_version_with_cache(&p.to_path_buf());
+        res = self.package_version_with_cache(p).await;
       }
     }
 
-    self.package_version_cache.insert(path.clone(), res.clone());
+    self.package_version_cache.insert(path.into(), res.clone());
     res
   }
 
@@ -93,17 +99,18 @@ impl StrategyHelper {
     Strategy::CompileTime(now)
   }
   /// get path file package version strategy
-  pub fn package_version(&mut self, path: &Utf8PathBuf) -> Option<Strategy> {
+  pub async fn package_version(&self, path: &Path) -> Option<Strategy> {
     self
       .package_version_with_cache(path)
+      .await
       .map(Strategy::PackageVersion)
   }
 
   /// validate path file by target strategy
-  pub fn validate(&mut self, path: &Utf8PathBuf, strategy: &Strategy) -> ValidateResult {
+  pub async fn validate(&self, path: &Path, strategy: &Strategy) -> ValidateResult {
     match strategy {
       Strategy::PackageVersion(version) => {
-        if let Some(ref cur_version) = self.package_version_with_cache(path) {
+        if let Some(ref cur_version) = self.package_version_with_cache(path).await {
           if cur_version == version {
             ValidateResult::NoChanged
           } else {
@@ -114,7 +121,7 @@ impl StrategyHelper {
         }
       }
       Strategy::CompileTime(compile_time) => {
-        if let Some(ref modified_time) = self.modified_time(path) {
+        if let Some(ref modified_time) = self.modified_time(path).await {
           if modified_time > compile_time {
             ValidateResult::Modified
           } else {
@@ -130,7 +137,7 @@ impl StrategyHelper {
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
+  use std::{path::Path, sync::Arc};
 
   use rspack_fs::{MemoryFileSystem, ReadableFileSystem, WritableFileSystem};
 
@@ -165,86 +172,102 @@ mod tests {
     };
     assert!(time1 < time2);
 
-    let mut helper = StrategyHelper::new(fs.clone());
+    let helper = StrategyHelper::new(fs.clone());
     // modified_time
     assert_eq!(
-      helper.modified_time(&"/file1".into()),
+      helper.modified_time(Path::new("/file1")).await,
       Some(fs.metadata("/file1".into()).unwrap().mtime_ms)
     );
-    assert!(helper.modified_time(&"/file2".into()).is_none());
+    assert!(helper.modified_time(Path::new("/file2")).await.is_none());
 
     // package_version_with_cache
     assert_eq!(
       helper
-        .package_version_with_cache(&"/packages/p1/file".into())
+        .package_version_with_cache(Path::new("/packages/p1/file"))
+        .await
         .unwrap(),
       "1.0.0"
     );
     assert_eq!(
       helper
-        .package_version_with_cache(&"/packages/p2/file".into())
+        .package_version_with_cache(Path::new("/packages/p2/file"))
+        .await
         .unwrap(),
       "1.1.0"
     );
     assert_eq!(
       helper
-        .package_version_with_cache(&"/packages/p2/dir1/dir2/dir3/file".into())
+        .package_version_with_cache(Path::new("/packages/p2/dir1/dir2/dir3/file"))
+        .await
         .unwrap(),
       "1.1.0"
     );
     assert!(helper
-      .package_version_with_cache(&"/file1".into())
+      .package_version_with_cache(Path::new("/file1"))
+      .await
       .is_none());
     assert!(helper
-      .package_version_with_cache(&"/file2".into())
+      .package_version_with_cache(Path::new("/file2"))
+      .await
       .is_none());
 
     // package_version
     assert_eq!(
-      helper.package_version(&"/packages/p1/file".into()).unwrap(),
+      helper
+        .package_version(Path::new("/packages/p1/file"))
+        .await
+        .unwrap(),
       Strategy::PackageVersion("1.0.0".into())
     );
     assert_eq!(
-      helper.package_version(&"/packages/p2/file".into()).unwrap(),
+      helper
+        .package_version(Path::new("/packages/p2/file"))
+        .await
+        .unwrap(),
       Strategy::PackageVersion("1.1.0".into())
     );
     assert_eq!(
       helper
-        .package_version(&"/packages/p2/dir1/dir2/dir3/file".into())
+        .package_version(Path::new("/packages/p2/dir1/dir2/dir3/file"))
+        .await
         .unwrap(),
       Strategy::PackageVersion("1.1.0".into())
     );
-    assert!(helper.package_version(&"/file1".into()).is_none());
-    assert!(helper.package_version(&"/file2".into()).is_none());
+    assert!(helper.package_version(Path::new("/file1")).await.is_none());
+    assert!(helper.package_version(Path::new("/file2")).await.is_none());
 
     // validate
     let now = StrategyHelper::compile_time();
     assert!(matches!(
-      helper.validate(&"/file1".into(), &now),
+      helper.validate(Path::new("/file1"), &now).await,
       ValidateResult::NoChanged
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
     fs.write("/file1".into(), "abcd".as_bytes()).await.unwrap();
     assert!(matches!(
-      helper.validate(&"/file1".into(), &now),
+      helper.validate(Path::new("/file1"), &now).await,
       ValidateResult::Modified
     ));
     assert!(matches!(
-      helper.validate(&"/file2".into(), &now),
+      helper.validate(Path::new("/file2"), &now).await,
       ValidateResult::Deleted
     ));
 
     let version = Strategy::PackageVersion("1.0.0".into());
     assert!(matches!(
-      helper.validate(&"/packages/p1/file1".into(), &version),
+      helper
+        .validate(Path::new("/packages/p1/file1"), &version)
+        .await,
       ValidateResult::NoChanged
     ));
     assert!(matches!(
-      helper.validate(&"/packages/p2/file1".into(), &version),
+      helper
+        .validate(Path::new("/packages/p2/file1"), &version)
+        .await,
       ValidateResult::Modified
     ));
     assert!(matches!(
-      helper.validate(&"/file2".into(), &version),
+      helper.validate(Path::new("/file2"), &version).await,
       ValidateResult::Deleted
     ));
   }

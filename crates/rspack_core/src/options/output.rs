@@ -1,15 +1,14 @@
-use std::sync::LazyLock;
-use std::{borrow::Cow, fmt::Debug, hash::Hash, str::FromStr, string::ParseError};
+use std::{borrow::Cow, fmt::Debug, hash::Hash, str::FromStr, string::ParseError, sync::LazyLock};
 
-use derivative::Derivative;
 use regex::Regex;
+use rspack_cacheable::cacheable;
 use rspack_hash::RspackHash;
 pub use rspack_hash::{HashDigest, HashFunction, HashSalt};
 use rspack_macros::MergeFrom;
-use rspack_paths::{AssertUtf8, Utf8Path, Utf8PathBuf};
-use sugar_path::SugarPath;
+use rspack_paths::Utf8PathBuf;
 
-use crate::{Chunk, ChunkGroupByUkey, ChunkKind, Compilation, Filename, FilenameTemplate};
+use super::CleanOptions;
+use crate::{Chunk, ChunkGroupByUkey, ChunkKind, Compilation, Filename};
 
 #[derive(Debug)]
 pub enum PathInfo {
@@ -17,15 +16,18 @@ pub enum PathInfo {
   String(String),
 }
 
+// BE CAREFUL:
+// Add more fields to this struct should result in adding new fields to options builder.
+// `impl From<OutputOptions> for OutputOptionsBuilder` should be updated.
 #[derive(Debug)]
 pub struct OutputOptions {
   pub path: Utf8PathBuf,
   pub pathinfo: PathInfo,
-  pub clean: bool,
+  pub clean: CleanOptions,
   pub public_path: PublicPath,
   pub asset_module_filename: Filename,
   pub wasm_loading: WasmLoading,
-  pub webassembly_module_filename: FilenameTemplate,
+  pub webassembly_module_filename: Filename,
   pub unique_name: String,
   pub chunk_loading: ChunkLoading,
   pub chunk_loading_global: String,
@@ -36,9 +38,8 @@ pub struct OutputOptions {
   pub cross_origin_loading: CrossOriginLoading,
   pub css_filename: Filename,
   pub css_chunk_filename: Filename,
-  pub css_head_data_compression: bool,
-  pub hot_update_main_filename: FilenameTemplate,
-  pub hot_update_chunk_filename: FilenameTemplate,
+  pub hot_update_main_filename: Filename,
+  pub hot_update_chunk_filename: Filename,
   pub hot_update_global: String,
   pub library: Option<LibraryOptions>,
   pub enabled_library_types: Option<Vec<String>>,
@@ -49,7 +50,7 @@ pub struct OutputOptions {
   pub iife: bool,
   pub module: bool,
   pub trusted_types: Option<TrustedTypes>,
-  pub source_map_filename: FilenameTemplate,
+  pub source_map_filename: Filename,
   pub hash_function: HashFunction,
   pub hash_digest: HashDigest,
   pub hash_digest_length: usize,
@@ -70,23 +71,32 @@ impl From<&OutputOptions> for RspackHash {
 }
 
 #[derive(Debug)]
-pub struct TrustedTypes {
-  pub policy_name: Option<String>,
+pub enum OnPolicyCreationFailure {
+  Continue,
+  Stop,
 }
 
+impl From<String> for OnPolicyCreationFailure {
+  fn from(value: String) -> Self {
+    if value == "continue" {
+      Self::Continue
+    } else {
+      Self::Stop
+    }
+  }
+}
+
+#[derive(Debug)]
+pub struct TrustedTypes {
+  pub policy_name: Option<String>,
+  pub on_policy_creation_failure: OnPolicyCreationFailure,
+}
+
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChunkLoading {
   Enable(ChunkLoadingType),
   Disable,
-}
-
-impl From<&str> for ChunkLoading {
-  fn from(value: &str) -> Self {
-    match value {
-      "false" => ChunkLoading::Disable,
-      v => ChunkLoading::Enable(v.into()),
-    }
-  }
 }
 
 impl From<ChunkLoading> for String {
@@ -98,15 +108,16 @@ impl From<ChunkLoading> for String {
   }
 }
 
-impl From<&ChunkLoading> for &str {
-  fn from(value: &ChunkLoading) -> Self {
-    match value {
-      ChunkLoading::Enable(ty) => ty.into(),
+impl ChunkLoading {
+  pub fn as_str(&self) -> &str {
+    match self {
+      ChunkLoading::Enable(ty) => ty.as_str(),
       ChunkLoading::Disable => "false",
     }
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChunkLoadingType {
   Jsonp,
@@ -114,7 +125,7 @@ pub enum ChunkLoadingType {
   Require,
   AsyncNode,
   Import,
-  // TODO: Custom
+  Custom(String),
 }
 
 impl From<&str> for ChunkLoadingType {
@@ -125,25 +136,26 @@ impl From<&str> for ChunkLoadingType {
       "require" => Self::Require,
       "async-node" => Self::AsyncNode,
       "import" => Self::Import,
-      _ => unimplemented!("custom chunkLoading in not supported yet"),
+      _ => Self::Custom(value.to_string()),
     }
   }
 }
 
 impl From<ChunkLoadingType> for String {
   fn from(value: ChunkLoadingType) -> Self {
-    Into::<&str>::into(&value).to_string()
+    value.as_str().to_string()
   }
 }
 
-impl From<&ChunkLoadingType> for &str {
-  fn from(value: &ChunkLoadingType) -> Self {
-    match value {
+impl ChunkLoadingType {
+  pub fn as_str(&self) -> &str {
+    match self {
       ChunkLoadingType::Jsonp => "jsonp",
       ChunkLoadingType::ImportScripts => "import-scripts",
       ChunkLoadingType::Require => "require",
       ChunkLoadingType::AsyncNode => "async-node",
       ChunkLoadingType::Import => "import",
+      ChunkLoadingType::Custom(value) => value.as_str(),
     }
   }
 }
@@ -163,11 +175,10 @@ impl From<&str> for WasmLoading {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WasmLoadingType {
   Fetch,
   AsyncNode,
-  AsyncNodeModule,
 }
 
 impl From<&str> for WasmLoadingType {
@@ -175,13 +186,12 @@ impl From<&str> for WasmLoadingType {
     match value {
       "fetch" => Self::Fetch,
       "async-node" => Self::AsyncNode,
-      "async-node-module" => Self::AsyncNodeModule,
-      _ => todo!(),
+      _ => unreachable!("invalid wasm loading type: {value}, expect one of [fetch, async-node]",),
     }
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CrossOriginLoading {
   Disable,
   Enable(String),
@@ -191,13 +201,12 @@ impl std::fmt::Display for CrossOriginLoading {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       CrossOriginLoading::Disable => write!(f, "false"),
-      CrossOriginLoading::Enable(value) => write!(f, "\"{}\"", value),
+      CrossOriginLoading::Enable(value) => write!(f, "\"{value}\""),
     }
   }
 }
 
-#[derive(Derivative, Default, Clone, Copy)]
-#[derivative(Debug)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct PathData<'a> {
   pub filename: Option<&'a str>,
   pub chunk_name: Option<&'a str>,
@@ -211,12 +220,21 @@ pub struct PathData<'a> {
   pub id: Option<&'a str>,
 }
 
+static MATCH_ID_REGEX: LazyLock<Regex> =
+  LazyLock::new(|| Regex::new(r#"^"\s\+*\s*(.*)\s*\+\s*"$"#).expect("invalid Regex"));
 static PREPARE_ID_REGEX: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r"(^[.-]|[^a-zA-Z0-9_-])+").expect("invalid Regex"));
 
 impl<'a> PathData<'a> {
   pub fn prepare_id(v: &str) -> Cow<str> {
-    PREPARE_ID_REGEX.replace_all(v, "_")
+    if let Some(caps) = MATCH_ID_REGEX.captures(v) {
+      Cow::Owned(format!(
+        "\" + ({} + \"\").replace(/(^[.-]|[^a-zA-Z0-9_-])+/g, \"_\") + \"",
+        caps.get(1).expect("capture group should exist").as_str()
+      ))
+    } else {
+      PREPARE_ID_REGEX.replace_all(v, "_")
+    }
   }
 
   pub fn filename(mut self, v: &'a str) -> Self {
@@ -295,28 +313,77 @@ impl<'a> PathData<'a> {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, MergeFrom)]
 pub enum PublicPath {
   Filename(Filename),
   Auto,
 }
 
+//https://github.com/webpack/webpack/blob/001cab14692eb9a833c6b56709edbab547e291a1/lib/util/identifier.js#L378
+pub fn get_undo_path(filename: &str, output_path: String, enforce_relative: bool) -> String {
+  let mut depth: i32 = -1;
+  let mut append = String::new();
+  let mut p = output_path;
+  if p.ends_with('/') || p.ends_with('\\') {
+    p.pop();
+  }
+  for part in filename.split(&['/', '\\']) {
+    if part == ".." {
+      if depth > -1 {
+        depth -= 1
+      } else {
+        let pos = match (p.rfind('/'), p.rfind('\\')) {
+          (None, None) => {
+            p.push('/');
+            return p;
+          }
+          (None, Some(j)) => j,
+          (Some(i), None) => i,
+          (Some(i), Some(j)) => usize::max(i, j),
+        };
+        append = format!("{}/{append}", &p[pos + 1..]);
+        p = p[0..pos].to_string();
+      }
+    } else if part != "." {
+      depth += 1;
+    }
+  }
+
+  if depth > 0 {
+    format!("{}{append}", "../".repeat(depth as usize))
+  } else if enforce_relative {
+    format!("./{append}")
+  } else {
+    append
+  }
+}
+
+#[test]
+fn test_get_undo_path() {
+  assert_eq!(get_undo_path("a", "/a/b/c".to_string(), true), "./");
+  assert_eq!(
+    get_undo_path("static/js/a.js", "/a/b/c".to_string(), false),
+    "../../"
+  );
+}
+
 impl PublicPath {
-  pub fn render(&self, compilation: &Compilation, filename: &str) -> String {
+  pub async fn render(&self, compilation: &Compilation, filename: &str) -> String {
     match self {
-      Self::Filename(f) => Self::ensure_ends_with_slash(Self::render_filename(compilation, f)),
+      Self::Filename(f) => {
+        Self::ensure_ends_with_slash(Self::render_filename(compilation, f).await)
+      }
       Self::Auto => Self::render_auto_public_path(compilation, filename),
     }
   }
 
-  pub fn render_filename(compilation: &Compilation, template: &Filename) -> String {
-    compilation
-      .get_path(
-        template,
-        // @{link https://github.com/webpack/webpack/blob/a642809846deefdb9db05214718af5ab78c0ab94/lib/runtime/PublicPathRuntimeModule.js#L30-L32}
-        PathData::default().hash(compilation.get_hash().unwrap_or("XXXX")),
-      )
-      .expect("failed to render public")
+  pub async fn render_filename(compilation: &Compilation, template: &Filename) -> String {
+    let path_data = PathData::default().hash(compilation.get_hash().unwrap_or("XXXX"));
+    template
+      .render(path_data, None)
+      .await
+      .expect("failed to render public path")
   }
 
   pub fn ensure_ends_with_slash(public_path: String) -> String {
@@ -328,26 +395,7 @@ impl PublicPath {
   }
 
   pub fn render_auto_public_path(compilation: &Compilation, filename: &str) -> String {
-    let public_path = match Utf8Path::new(filename).parent() {
-      None => String::new(),
-      Some(dirname) => compilation
-        .options
-        .output
-        .path
-        .as_std_path()
-        .relative(
-          compilation
-            .options
-            .output
-            .path
-            .join(dirname)
-            .into_std_path_buf()
-            .absolutize(),
-        )
-        .assert_utf8()
-        .as_str()
-        .to_owned(),
-    };
+    let public_path = get_undo_path(filename, compilation.options.output.path.to_string(), false);
     Self::ensure_ends_with_slash(public_path)
   }
 }
@@ -364,7 +412,7 @@ impl FromStr for PublicPath {
     if s.eq("auto") {
       Ok(Self::Auto)
     } else {
-      Ok(Self::Filename(Filename::from_str(s)?))
+      Ok(Self::Filename(Filename::from(s)))
     }
   }
 }
@@ -403,7 +451,7 @@ pub fn get_js_chunk_filename_template(
   if let Some(filename_template) = chunk.filename_template() {
     filename_template.clone()
   } else if matches!(chunk.kind(), ChunkKind::HotUpdate) {
-    output_options.hot_update_chunk_filename.clone().into()
+    output_options.hot_update_chunk_filename.clone()
   } else if chunk.can_be_initial(chunk_group_by_ukey) {
     output_options.filename.clone()
   } else {
@@ -411,6 +459,7 @@ pub fn get_js_chunk_filename_template(
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LibraryOptions {
   pub name: Option<LibraryName>,
@@ -426,6 +475,7 @@ pub type LibraryType = String;
 
 pub type LibraryExport = Vec<String>;
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LibraryAuxiliaryComment {
   pub root: Option<String>,
@@ -434,18 +484,21 @@ pub struct LibraryAuxiliaryComment {
   pub amd: Option<String>,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LibraryName {
   NonUmdObject(LibraryNonUmdObject),
   UmdObject(LibraryCustomUmdObject),
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LibraryNonUmdObject {
   Array(Vec<String>),
   String(String),
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LibraryCustomUmdObject {
   pub amd: Option<String>,
@@ -453,11 +506,22 @@ pub struct LibraryCustomUmdObject {
   pub root: Option<Vec<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct Environment {
   pub r#const: Option<bool>,
   pub arrow_function: Option<bool>,
   pub node_prefix_for_core_modules: Option<bool>,
+  pub async_function: Option<bool>,
+  pub big_int_literal: Option<bool>,
+  pub destructuring: Option<bool>,
+  pub document: Option<bool>,
+  pub dynamic_import: Option<bool>,
+  pub for_of: Option<bool>,
+  pub global_this: Option<bool>,
+  pub module: Option<bool>,
+  pub optional_chaining: Option<bool>,
+  pub template_literal: Option<bool>,
+  pub dynamic_import_in_worker: Option<bool>,
 }
 
 impl Environment {
@@ -471,5 +535,49 @@ impl Environment {
 
   pub fn supports_node_prefix_for_core_modules(&self) -> bool {
     self.node_prefix_for_core_modules.unwrap_or_default()
+  }
+
+  pub fn supports_async_function(&self) -> bool {
+    self.async_function.unwrap_or_default()
+  }
+
+  pub fn supports_big_int_literal(&self) -> bool {
+    self.big_int_literal.unwrap_or_default()
+  }
+
+  pub fn supports_destructuring(&self) -> bool {
+    self.destructuring.unwrap_or_default()
+  }
+
+  pub fn supports_document(&self) -> bool {
+    self.document.unwrap_or_default()
+  }
+
+  pub fn supports_dynamic_import(&self) -> bool {
+    self.dynamic_import.unwrap_or_default()
+  }
+
+  pub fn supports_dynamic_import_in_worker(&self) -> bool {
+    self.dynamic_import_in_worker.unwrap_or_default()
+  }
+
+  pub fn supports_for_of(&self) -> bool {
+    self.for_of.unwrap_or_default()
+  }
+
+  pub fn supports_global_this(&self) -> bool {
+    self.global_this.unwrap_or_default()
+  }
+
+  pub fn supports_module(&self) -> bool {
+    self.module.unwrap_or_default()
+  }
+
+  pub fn supports_optional_chaining(&self) -> bool {
+    self.optional_chaining.unwrap_or_default()
+  }
+
+  pub fn supports_template_literal(&self) -> bool {
+    self.template_literal.unwrap_or_default()
   }
 }

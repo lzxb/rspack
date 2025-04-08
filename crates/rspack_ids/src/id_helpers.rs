@@ -1,38 +1,37 @@
-use std::sync::LazyLock;
 use std::{
   borrow::Cow,
   cmp::Ordering,
-  collections::{hash_map::DefaultHasher, HashMap, HashSet},
   hash::{Hash, Hasher},
+  sync::LazyLock,
 };
 
 use itertools::{
   EitherOrBoth::{Both, Left, Right},
   Itertools,
 };
-use rayon::prelude::*;
 use regex::Regex;
 use rspack_collections::DatabaseItem;
 use rspack_core::{
-  compare_runtime, BoxModule, Chunk, ChunkGraph, ChunkUkey, Compilation, ModuleGraph,
-  ModuleIdentifier,
+  compare_runtime, BoxModule, Chunk, ChunkGraph, ChunkGroupByUkey, ChunkUkey, Compilation,
+  ModuleGraph, ModuleIdentifier, ModuleIdsArtifact,
 };
-use rspack_util::itoa;
 use rspack_util::{
   comparators::{compare_ids, compare_numbers},
   identifier::make_paths_relative,
+  itoa,
   number_hash::get_number_hash,
 };
+use rustc_hash::{FxHashSet, FxHasher};
 
 #[allow(clippy::type_complexity)]
 #[allow(clippy::collapsible_else_if)]
 pub fn get_used_module_ids_and_modules(
   compilation: &Compilation,
   filter: Option<Box<dyn Fn(&BoxModule) -> bool>>,
-) -> (HashSet<String>, Vec<ModuleIdentifier>) {
+) -> (FxHashSet<String>, Vec<ModuleIdentifier>) {
   let chunk_graph = &compilation.chunk_graph;
   let mut modules = vec![];
-  let mut used_ids = HashSet::new();
+  let mut used_ids = FxHashSet::default();
 
   // TODO: currently we don't have logic of compilation.usedModuleIds
   //   if (compilation.usedModuleIds) {
@@ -47,11 +46,12 @@ pub fn get_used_module_ids_and_modules(
     .values()
     .filter(|m| m.need_id())
     .for_each(|module| {
-      let module_id = chunk_graph.get_module_id(module.identifier());
+      let module_id =
+        ChunkGraph::get_module_id(&compilation.module_ids_artifact, module.identifier());
       if let Some(module_id) = module_id {
         used_ids.insert(module_id.to_string());
       } else {
-        if filter.as_ref().map_or(true, |f| (f)(module))
+        if filter.as_ref().is_none_or(|f| (f)(module))
           && chunk_graph.get_number_of_module_chunks(module.identifier()) != 0
         {
           modules.push(module.identifier());
@@ -106,7 +106,7 @@ pub fn get_full_module_name(module: &BoxModule, context: &str) -> String {
 }
 
 pub fn get_hash(s: impl Hash, length: usize) -> String {
-  let mut hasher = DefaultHasher::default();
+  let mut hasher = FxHasher::default();
   s.hash(&mut hasher);
   let hash = hasher.finish();
   let mut hash_str = format!("{hash:x}");
@@ -114,137 +114,6 @@ pub fn get_hash(s: impl Hash, length: usize) -> String {
     hash_str.truncate(length);
   }
   hash_str
-}
-
-// pub fn assign_names<T: Copy>(
-//   items: Vec<T>,
-//   get_short_name: impl Fn(T) -> String,
-//   get_long_name: impl Fn(T, &str) -> String,
-//   comparator: impl Fn(&T, &T) -> Ordering,
-//   used_ids: &mut HashSet<String>,
-//   mut assign_name: impl FnMut(T, String),
-// ) -> Vec<T> {
-//   let mut name_to_items: HashMap<String, Vec<T>> = HashMap::default();
-//   for item in items {
-//     let name = get_short_name(item);
-//     name_to_items.entry(name).or_default().push(item);
-//   }
-//
-//   let mut name_to_items2: HashMap<String, Vec<T>> = HashMap::default();
-//
-//   for (name, items) in name_to_items {
-//     if items.len() > 1 || name.is_empty() {
-//       for item in items {
-//         let long_name = get_long_name(item, &name);
-//         name_to_items2.entry(long_name).or_default().push(item);
-//       }
-//     } else {
-//       name_to_items2.entry(name).or_default().push(items[0]);
-//     }
-//   }
-//
-//   let name_to_items2_keys = name_to_items2.keys().cloned().collect::<HashSet<_>>();
-//
-//   let mut unnamed_items = vec![];
-//   for (name, mut items) in name_to_items2 {
-//     if name.is_empty() {
-//       for item in items {
-//         unnamed_items.push(item)
-//       }
-//     } else if items.len() == 1 && !used_ids.contains(&name) {
-//       assign_name(items[0], name.clone());
-//       used_ids.insert(name.clone());
-//     } else {
-//       items.sort_unstable_by(&comparator);
-//       let mut i = 0;
-//       for item in items {
-//         let formatted_name = format!("{name}{i}");
-//         while name_to_items2_keys.contains(&formatted_name) && used_ids.contains(&formatted_name) {
-//           i += 1;
-//         }
-//         assign_name(item, formatted_name.clone());
-//         used_ids.insert(formatted_name);
-//         i += 1;
-//       }
-//     }
-//   }
-//   unnamed_items.sort_unstable_by(comparator);
-//   unnamed_items
-// }
-
-pub fn assign_names_par<T: Copy + Send>(
-  items: Vec<T>,
-  get_short_name: impl Fn(T) -> String + std::marker::Sync,
-  get_long_name: impl Fn(T, &str) -> String + std::marker::Sync,
-  comparator: impl Fn(&T, &T) -> Ordering,
-  used_ids: &mut HashSet<String>,
-  mut assign_name: impl FnMut(T, String),
-) -> Vec<T> {
-  let item_name_pair = items
-    .into_par_iter()
-    .map(|item| {
-      let name = get_short_name(item);
-      (item, name)
-    })
-    .collect::<Vec<(T, String)>>();
-  let mut name_to_items: HashMap<String, Vec<T>> = HashMap::default();
-  let mut invalid_and_repeat_names: HashSet<String> = HashSet::default();
-  invalid_and_repeat_names.insert(String::from(""));
-  for (item, name) in item_name_pair {
-    let items = name_to_items.entry(name.clone()).or_default();
-    items.push(item);
-    if items.len() > 1 {
-      invalid_and_repeat_names.insert(name);
-    }
-  }
-
-  let item_name_pair = invalid_and_repeat_names
-    .iter()
-    .flat_map(|name| {
-      let mut res = vec![];
-      for item in name_to_items.remove(name).unwrap_or_default() {
-        res.push((name.clone(), item));
-      }
-      res
-    })
-    .par_bridge()
-    .map(|(name, item)| {
-      let long_name = get_long_name(item, name.as_str());
-      (item, long_name)
-    })
-    .collect::<Vec<(T, String)>>();
-  for (item, name) in item_name_pair {
-    name_to_items.entry(name).or_default().push(item);
-  }
-
-  let name_to_items_keys = name_to_items.keys().cloned().collect::<HashSet<_>>();
-
-  let mut unnamed_items = vec![];
-  for (name, mut items) in name_to_items {
-    if name.is_empty() {
-      for item in items {
-        unnamed_items.push(item)
-      }
-    } else if items.len() == 1 && !used_ids.contains(&name) {
-      assign_name(items[0], name.clone());
-      used_ids.insert(name.clone());
-    } else {
-      items.sort_unstable_by(&comparator);
-      let mut i = 0;
-      for item in items {
-        let mut formatted_name = format!("{name}{}", itoa!(i));
-        while name_to_items_keys.contains(&formatted_name) && used_ids.contains(&formatted_name) {
-          i += 1;
-          formatted_name = format!("{name}{}", itoa!(i));
-        }
-        assign_name(item, formatted_name.clone());
-        used_ids.insert(formatted_name);
-        i += 1;
-      }
-    }
-  }
-  unnamed_items.sort_unstable_by(comparator);
-  unnamed_items
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -287,17 +156,17 @@ pub fn assign_deterministic_ids<T: Copy>(
 }
 
 pub fn assign_ascending_module_ids(
-  used_ids: &HashSet<String>,
+  used_ids: &FxHashSet<String>,
   modules: Vec<&BoxModule>,
-  chunk_graph: &mut ChunkGraph,
+  module_ids: &mut ModuleIdsArtifact,
 ) {
   let mut next_id = 0;
   let mut assign_id = |module: &BoxModule| {
-    if chunk_graph.get_module_id(module.identifier()).is_none() {
+    if ChunkGraph::get_module_id(module_ids, module.identifier()).is_none() {
       while used_ids.contains(&next_id.to_string()) {
         next_id += 1;
       }
-      chunk_graph.set_module_id(module.identifier(), next_id.to_string());
+      ChunkGraph::set_module_id(module_ids, module.identifier(), next_id.to_string().into());
       next_id += 1;
     }
   };
@@ -448,15 +317,11 @@ pub fn request_to_id(request: &str) -> String {
     .to_string()
 }
 
-pub fn get_used_chunk_ids(compilation: &Compilation) -> HashSet<String> {
-  let mut used_ids = compilation
-    .used_chunk_ids
-    .iter()
-    .cloned()
-    .collect::<HashSet<_>>();
+pub fn get_used_chunk_ids(compilation: &Compilation) -> FxHashSet<String> {
+  let mut used_ids = FxHashSet::default();
   for chunk in compilation.chunk_by_ukey.values() {
-    if let Some(id) = chunk.id() {
-      used_ids.insert(id.to_owned());
+    if let Some(id) = chunk.id(&compilation.chunk_ids_artifact) {
+      used_ids.insert(id.to_string());
     }
   }
   used_ids
@@ -469,19 +334,19 @@ pub fn assign_ascending_chunk_ids(chunks: &[ChunkUkey], compilation: &mut Compil
   if !used_ids.is_empty() {
     for chunk in chunks {
       let chunk = compilation.chunk_by_ukey.expect_get_mut(chunk);
-      if chunk.id().is_none() {
+      if chunk.id(&compilation.chunk_ids_artifact).is_none() {
         while used_ids.contains(&next_id.to_string()) {
           next_id += 1;
         }
-        chunk.set_id(Some(next_id.to_string()));
+        chunk.set_id(&mut compilation.chunk_ids_artifact, next_id.to_string());
         next_id += 1;
       }
     }
   } else {
     for chunk in chunks {
       let chunk = compilation.chunk_by_ukey.expect_get_mut(chunk);
-      if chunk.id().is_none() {
-        chunk.set_id(Some(next_id.to_string()));
+      if chunk.id(&compilation.chunk_ids_artifact).is_none() {
+        chunk.set_id(&mut compilation.chunk_ids_artifact, next_id.to_string());
         next_id += 1;
       }
     }
@@ -491,19 +356,22 @@ pub fn assign_ascending_chunk_ids(chunks: &[ChunkUkey], compilation: &mut Compil
 fn compare_chunks_by_modules(
   chunk_graph: &ChunkGraph,
   module_graph: &ModuleGraph,
+  module_ids: &ModuleIdsArtifact,
   a: &Chunk,
   b: &Chunk,
 ) -> Ordering {
   let a_modules = chunk_graph.get_ordered_chunk_modules(&a.ukey(), module_graph);
   let b_modules = chunk_graph.get_ordered_chunk_modules(&b.ukey(), module_graph);
 
-  let eq = a_modules
+  let ordering = a_modules
     .into_iter()
     .zip_longest(b_modules)
     .find_map(|pair| match pair {
       Both(a_module, b_module) => {
-        let a_module_id = chunk_graph.get_module_id(a_module.identifier());
-        let b_module_id = chunk_graph.get_module_id(b_module.identifier());
+        let a_module_id =
+          ChunkGraph::get_module_id(module_ids, a_module.identifier()).map(|s| s.as_str());
+        let b_module_id =
+          ChunkGraph::get_module_id(module_ids, b_module.identifier()).map(|s| s.as_str());
         let ordering = compare_ids(
           a_module_id.unwrap_or_default(),
           b_module_id.unwrap_or_default(),
@@ -518,18 +386,28 @@ fn compare_chunks_by_modules(
     })
     .unwrap_or(Ordering::Equal);
 
-  // 2 chunks are exactly the same, we have to compare
-  // the ukey to get stable results
-  if matches!(eq, Ordering::Equal) {
-    return a.ukey().cmp(&b.ukey());
-  }
+  ordering
+}
 
-  eq
+fn compare_chunks_by_groups(
+  chunk_group_by_ukey: &ChunkGroupByUkey,
+  a: &Chunk,
+  b: &Chunk,
+) -> Ordering {
+  let a_groups = a
+    .get_sorted_groups_iter(chunk_group_by_ukey)
+    .map(|group| chunk_group_by_ukey.expect_get(group).index);
+  let b_groups = b
+    .get_sorted_groups_iter(chunk_group_by_ukey)
+    .map(|group| chunk_group_by_ukey.expect_get(group).index);
+  a_groups.cmp_by(b_groups, |a, b| a.cmp(&b))
 }
 
 pub fn compare_chunks_natural(
   chunk_graph: &ChunkGraph,
   module_graph: &ModuleGraph,
+  chunk_group_by_ukey: &ChunkGroupByUkey,
+  module_ids: &ModuleIdsArtifact,
   a: &Chunk,
   b: &Chunk,
 ) -> Ordering {
@@ -543,5 +421,10 @@ pub fn compare_chunks_natural(
     return runtime_ordering;
   }
 
-  compare_chunks_by_modules(chunk_graph, module_graph, a, b)
+  let modules_ordering = compare_chunks_by_modules(chunk_graph, module_graph, module_ids, a, b);
+  if modules_ordering != Ordering::Equal {
+    return modules_ordering;
+  }
+
+  compare_chunks_by_groups(chunk_group_by_ukey, a, b)
 }

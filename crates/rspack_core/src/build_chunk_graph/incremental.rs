@@ -1,7 +1,9 @@
 use std::{collections::HashSet, hash::BuildHasherDefault};
 
 use num_bigint::BigUint;
-use rspack_collections::{IdentifierHasher, IdentifierIndexSet, UkeySet};
+use rspack_collections::{
+  IdentifierHasher, IdentifierIndexSet, IdentifierMap, IdentifierSet, UkeySet,
+};
 use rspack_error::Result;
 use tracing::instrument;
 
@@ -31,6 +33,7 @@ impl ChunkReCreation {
     match self {
       ChunkReCreation::Entry(entry) => {
         let input = splitter.prepare_entry_input(&entry, compilation)?;
+        splitter.set_entry_runtime_and_depend_on(&entry, compilation)?;
         splitter.prepare_entries(std::iter::once(input).collect(), compilation)?;
         Ok(())
       }
@@ -128,7 +131,7 @@ impl CodeSplitter {
         continue;
       };
 
-      parent_cg.children.remove(&chunk_group_ukey);
+      parent_cg.children.swap_remove_full(&chunk_group_ukey);
 
       if let Some(parent_cgi) = self.chunk_group_info_map.get(parent) {
         if let Some(parent_cgi) = self.chunk_group_infos.get_mut(parent_cgi) {
@@ -374,17 +377,21 @@ impl CodeSplitter {
     self.outdated_chunk_group_info.insert(cgi_ukey);
 
     let cgi = self.chunk_group_infos.expect_get_mut(&cgi_ukey);
+    let group_ukey = cgi.chunk_group;
     cgi.skipped_items = cache_result.skipped_modules.clone();
 
     let chunk_graph = &mut compilation.chunk_graph;
     for module in &cache_result.modules {
       let ordinal = self.get_module_ordinal(*module);
       chunk_graph.connect_chunk_and_module(chunk, *module);
+
       let mask = self.mask_by_chunk.entry(chunk).or_default();
       mask.set_bit(ordinal, true);
-
-      // TODO: correct preorder index
     }
+
+    let group = compilation.chunk_group_by_ukey.expect_get_mut(&group_ukey);
+    group.module_pre_order_indices = cache_result.pre_order_indices.clone();
+    group.module_post_order_indices = cache_result.post_order_indices.clone();
 
     for block in &cache_result.outgoings {
       self.make_chunk_group(
@@ -438,29 +445,51 @@ impl CodeSplitter {
     self.stat_cache_miss_by_available_modules = 0;
     self.stat_cache_miss_by_cant_rebuild = 0;
 
-    let modules = if let Some(mutations) = compilation
+    let (affected_modules, removed_modules) = if let Some(mutations) = compilation
       .incremental
       .mutations_read(IncrementalPasses::BUILD_CHUNK_GRAPH)
     {
-      let affected_lock = mutations.get_affected_modules_with_module_graph(&module_graph);
-      let affected = affected_lock.clone();
-      drop(affected_lock);
-      affected
+      let affected_modules = mutations.get_affected_modules_with_module_graph(&module_graph);
+      let removed_modules: IdentifierSet = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+          Mutation::ModuleRemove { module } => Some(*module),
+          _ => None,
+        })
+        .collect();
+      (affected_modules, removed_modules)
     } else {
-      compilation
-        .get_module_graph()
-        .modules()
-        .keys()
-        .copied()
-        .collect()
+      (
+        compilation
+          .get_module_graph()
+          .modules()
+          .keys()
+          .copied()
+          .collect(),
+        Default::default(),
+      )
     };
 
     let mut edges = vec![];
 
     // collect invalidate caches before we do anything to the chunk graph
-    let dirty_blocks = self.collect_dirty_caches(compilation, modules.iter().copied());
+    let dirty_blocks = self.collect_dirty_caches(
+      compilation,
+      affected_modules
+        .iter()
+        .chain(removed_modules.iter())
+        .copied(),
+    );
 
-    for m in modules {
+    for m in removed_modules {
+      for module_map in self.block_modules_runtime_map.values_mut() {
+        module_map.swap_remove(&DependenciesBlockIdentifier::Module(m));
+      }
+
+      self.invalidate_from_module(m, compilation)?;
+    }
+
+    for m in affected_modules {
       for module_map in self.block_modules_runtime_map.values_mut() {
         module_map.swap_remove(&DependenciesBlockIdentifier::Module(m));
       }
@@ -477,6 +506,31 @@ impl CodeSplitter {
     for edge in edges {
       edge.rebuild(self, compilation)?;
     }
+
+    // If after edges rebuild there are still some entries not included in entrypoints
+    // then they are new added entries and we build them.
+    let new_entries: Vec<_> = compilation
+      .entries
+      .keys()
+      .filter(|entry| !compilation.entrypoints.contains_key(entry.as_str()))
+      .map(|entry| ChunkReCreation::Entry(entry.to_owned()))
+      .collect();
+    for edge in new_entries {
+      edge.rebuild(self, compilation)?;
+    }
+
+    // Ensure entrypoints always have the same order with entries
+    compilation.entrypoints.sort_unstable_by(|a, _, b, _| {
+      let a = compilation
+        .entries
+        .get_index_of(a)
+        .expect("entrypoints must exist in entries");
+      let b = compilation
+        .entries
+        .get_index_of(b)
+        .expect("entrypoints must exist in entries");
+      a.cmp(&b)
+    });
 
     Ok(())
   }
@@ -507,6 +561,7 @@ impl CodeSplitter {
 
         let can_rebuild = cg.parents.len() == 1;
 
+        let group = compilation.chunk_group_by_ukey.expect_get(&cgi.chunk_group);
         self.chunk_caches.insert(
           *block_id,
           ChunkCreateData {
@@ -521,6 +576,8 @@ impl CodeSplitter {
                 .into_iter()
                 .map(|m| m.identifier())
                 .collect(),
+              pre_order_indices: group.module_pre_order_indices.clone(),
+              post_order_indices: group.module_post_order_indices.clone(),
               skipped_modules: cgi.skipped_items.clone(),
               outgoings: cgi.outgoing_blocks.clone(),
             }),
@@ -581,6 +638,8 @@ impl CodeSplitter {
 #[derive(Debug, Clone)]
 struct CacheResult {
   pub modules: Vec<ModuleIdentifier>,
+  pub pre_order_indices: IdentifierMap<usize>,
+  pub post_order_indices: IdentifierMap<usize>,
   pub skipped_modules: IdentifierIndexSet,
   pub outgoings: std::collections::HashSet<
     AsyncDependenciesBlockIdentifier,

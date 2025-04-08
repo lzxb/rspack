@@ -9,14 +9,16 @@
  */
 import type * as binding from "@rspack/binding";
 import {
+	type AssetInfo,
+	type Dependency,
 	type ExternalObject,
-	type JsCompatSource,
+	type JsCompatSourceOwned,
 	type JsCompilation,
-	type JsModule,
 	type JsPathData,
 	JsRspackSeverity,
 	type JsRuntimeModule
 } from "@rspack/binding";
+export type { AssetInfo } from "@rspack/binding";
 import * as liteTapable from "@rspack/lite-tapable";
 import type { Source } from "webpack-sources";
 import { Chunk } from "./Chunk";
@@ -24,10 +26,9 @@ import { ChunkGraph } from "./ChunkGraph";
 import { ChunkGroup } from "./ChunkGroup";
 import type { Compiler } from "./Compiler";
 import type { ContextModuleFactory } from "./ContextModuleFactory";
-import { Dependency } from "./Dependency";
 import { Entrypoint } from "./Entrypoint";
 import { cutOffLoaderExecution } from "./ErrorHelpers";
-import { type CodeGenerationResult, Module } from "./Module";
+import type { CodeGenerationResult, Module } from "./Module";
 import ModuleGraph from "./ModuleGraph";
 import type { NormalModuleFactory } from "./NormalModuleFactory";
 import type { ResolverFactory } from "./ResolverFactory";
@@ -39,6 +40,7 @@ import {
 	type StatsError,
 	type StatsModule
 } from "./Stats";
+import type { EntryOptions, EntryPlugin } from "./builtin-plugin";
 import type {
 	Filename,
 	OutputNormalized,
@@ -47,18 +49,16 @@ import type {
 	StatsOptions,
 	StatsValue
 } from "./config";
+import WebpackError from "./lib/WebpackError";
 import { LogType, Logger } from "./logging/Logger";
 import { StatsFactory } from "./stats/StatsFactory";
 import { StatsPrinter } from "./stats/StatsPrinter";
-import { type AssetInfo, JsAssetInfo } from "./util/AssetInfo";
-import MergeCaller from "./util/MergeCaller";
+import { AsyncTask } from "./util/AsyncTask";
 import { createReadonlyMap } from "./util/createReadonlyMap";
 import { createFakeCompilationDependencies } from "./util/fake";
 import type { InputFileSystem } from "./util/fs";
 import type Hash from "./util/hash";
-import { memoizeValue } from "./util/memoize";
 import { JsSource } from "./util/source";
-export type { AssetInfo } from "./util/AssetInfo";
 
 export type Assets = Record<string, Source>;
 export interface Asset {
@@ -184,8 +184,17 @@ export type NormalizedStatsOptions = KnownNormalizedStatsOptions &
 	Omit<StatsOptions, keyof KnownNormalizedStatsOptions> &
 	Record<string, any>;
 
+export const checkCompilation = (compilation: Compilation) => {
+	if (!(compilation instanceof Compilation)) {
+		throw new TypeError(
+			`The 'compilation' argument must be an instance of Compilation. This usually occurs when multiple versions of "@rspack/core" are used, or when the code in "@rspack/core" is executed multiple times.`
+		);
+	}
+};
+
 export class Compilation {
 	#inner: JsCompilation;
+	#shutdown: boolean;
 
 	hooks: Readonly<{
 		processAssets: liteTapable.AsyncSeriesHook<Assets>;
@@ -236,6 +245,7 @@ export class Compilation {
 		runtimeModule: liteTapable.SyncHook<[JsRuntimeModule, Chunk], void>;
 		seal: liteTapable.SyncHook<[], void>;
 		afterSeal: liteTapable.AsyncSeriesHook<[], void>;
+		needAdditionalPass: liteTapable.SyncBailHook<[], boolean>;
 	}>;
 	name?: string;
 	startTime?: number;
@@ -257,22 +267,13 @@ export class Compilation {
 			return null;
 		}
 	};
+	needAdditionalPass: boolean;
 
-	/**
-	 * Records the dynamically added fields for Module on the JavaScript side, using the Module identifier for association.
-	 * These fields are generally used within a plugin, so they do not need to be passed back to the Rust side.
-	 */
-	#customModules: Record<
-		string,
-		{
-			buildInfo: Record<string, unknown>;
-			buildMeta: Record<string, unknown>;
-		}
-	>;
+	#addIncludeDispatcher: AddIncludeDispatcher;
 
 	constructor(compiler: Compiler, inner: JsCompilation) {
 		this.#inner = inner;
-		this.#customModules = {};
+		this.#shutdown = false;
 
 		const processAssetsHook = new liteTapable.AsyncSeriesHook<Assets>([
 			"assets"
@@ -371,7 +372,8 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 			),
 			runtimeModule: new liteTapable.SyncHook(["module", "chunk"]),
 			seal: new liteTapable.SyncHook([]),
-			afterSeal: new liteTapable.AsyncSeriesHook([])
+			afterSeal: new liteTapable.AsyncSeriesHook([]),
+			needAdditionalPass: new liteTapable.SyncBailHook([])
 		};
 		this.compiler = compiler;
 		this.resolverFactory = compiler.resolverFactory;
@@ -381,9 +383,14 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 		this.logging = new Map();
 		this.childrenCounters = {};
 		this.children = [];
+		this.needAdditionalPass = false;
 
-		this.chunkGraph = new ChunkGraph(this);
+		this.chunkGraph = ChunkGraph.__from_binding(inner.chunkGraph);
 		this.moduleGraph = ModuleGraph.__from_binding(inner.moduleGraph);
+
+		this.#addIncludeDispatcher = new AddIncludeDispatcher(
+			inner.addInclude.bind(inner)
+		);
 	}
 
 	get hash(): Readonly<string | null> {
@@ -398,29 +405,24 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 	 * Get a map of all assets.
 	 */
 	get assets(): Record<string, Source> {
-		return memoizeValue(() => this.#createCachedAssets());
+		return this.#createCachedAssets();
 	}
 
 	/**
 	 * Get a map of all entrypoints.
 	 */
 	get entrypoints(): ReadonlyMap<string, Entrypoint> {
-		return memoizeValue(
-			() =>
-				new Map(
-					Object.entries(this.#inner.entrypoints).map(([n, e]) => [
-						n,
-						Entrypoint.__from_binding(e, this.#inner)
-					])
-				)
+		return new Map(
+			this.#inner.entrypoints.map(binding => {
+				const entrypoint = Entrypoint.__from_binding(binding);
+				return [entrypoint.name!, entrypoint];
+			})
 		);
 	}
 
 	get chunkGroups(): ReadonlyArray<ChunkGroup> {
-		return memoizeValue(() =>
-			this.#inner.chunkGroups.map(cg =>
-				ChunkGroup.__from_binding(cg, this.#inner)
-			)
+		return this.#inner.chunkGroups.map(binding =>
+			ChunkGroup.__from_binding(binding)
 		);
 	}
 
@@ -437,29 +439,23 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 			},
 			get: (property: unknown) => {
 				if (typeof property === "string") {
-					const chunk = this.#inner.getNamedChunkGroup(property) || undefined;
-					return chunk && ChunkGroup.__from_binding(chunk, this.#inner);
+					const binding = this.#inner.getNamedChunkGroup(property);
+					return ChunkGroup.__from_binding(binding);
 				}
 			}
 		});
 	}
 
 	get modules(): ReadonlySet<Module> {
-		return new Set(
-			this.#inner.modules.map(module => Module.__from_binding(module, this))
-		);
+		return new Set(this.#inner.modules);
 	}
 
 	get builtModules(): ReadonlySet<Module> {
-		return new Set(
-			this.#inner.builtModules.map(module =>
-				Module.__from_binding(module, this)
-			)
-		);
+		return new Set(this.#inner.builtModules);
 	}
 
 	get chunks(): ReadonlySet<Chunk> {
-		return memoizeValue(() => new Set(this.__internal__getChunks()));
+		return new Set(this.__internal__getChunks());
 	}
 
 	/**
@@ -475,8 +471,8 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 			},
 			get: (property: unknown) => {
 				if (typeof property === "string") {
-					const chunk = this.#inner.getNamedChunk(property) || undefined;
-					return chunk && Chunk.__from_binding(chunk, this.#inner);
+					const binding = this.#inner.getNamedChunk(property);
+					return binding ? Chunk.__from_binding(binding) : undefined;
 				}
 			}
 		});
@@ -528,22 +524,6 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 				}
 			}
 		);
-	}
-
-	/**
-	 * Note: This is not a webpack public API, maybe removed in future.
-	 *
-	 * @internal
-	 */
-	__internal__getCustomModule(moduleIdentifier: string) {
-		let module = this.#customModules[moduleIdentifier];
-		if (!module) {
-			module = this.#customModules[moduleIdentifier] = {
-				buildInfo: {},
-				buildMeta: {}
-			};
-		}
-		return module;
 	}
 
 	getCache(name: string) {
@@ -600,15 +580,15 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 		newSourceOrFunction: Source | ((source: Source) => Source),
 		assetInfoUpdateOrFunction?:
 			| AssetInfo
-			| ((assetInfo: AssetInfo) => AssetInfo)
+			| ((assetInfo: AssetInfo) => AssetInfo | undefined)
 	) {
 		let compatNewSourceOrFunction:
-			| JsCompatSource
-			| ((source: JsCompatSource) => JsCompatSource);
+			| JsCompatSourceOwned
+			| ((source: JsCompatSourceOwned) => JsCompatSourceOwned);
 
 		if (typeof newSourceOrFunction === "function") {
 			compatNewSourceOrFunction = function newSourceFunction(
-				source: JsCompatSource
+				source: JsCompatSourceOwned
 			) {
 				return JsSource.__to_binding(
 					newSourceOrFunction(JsSource.__from_binding(source))
@@ -621,12 +601,7 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 		this.#inner.updateAsset(
 			filename,
 			compatNewSourceOrFunction,
-			assetInfoUpdateOrFunction === undefined
-				? assetInfoUpdateOrFunction
-				: typeof assetInfoUpdateOrFunction === "function"
-					? jsAssetInfo =>
-							JsAssetInfo.__to_binding(assetInfoUpdateOrFunction(jsAssetInfo))
-					: JsAssetInfo.__to_binding(assetInfoUpdateOrFunction)
+			assetInfoUpdateOrFunction
 		);
 	}
 
@@ -638,30 +613,7 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 	 * @param assetInfo - extra asset information
 	 */
 	emitAsset(filename: string, source: Source, assetInfo?: AssetInfo) {
-		this.#inner.emitAsset(
-			filename,
-			JsSource.__to_binding(source),
-			JsAssetInfo.__to_binding(assetInfo)
-		);
-	}
-
-	/**
-	 * Note: This is not a webpack public API, maybe removed in future.
-	 *
-	 * @internal
-	 */
-	__internal__emit_asset_from_loader(
-		filename: string,
-		source: Source,
-		assetInfo: AssetInfo,
-		module: string
-	) {
-		this.#inner.emitAssetFromLoader(
-			filename,
-			JsSource.__to_binding(source),
-			JsAssetInfo.__to_binding(assetInfo),
-			module
-		);
+		this.#inner.emitAsset(filename, JsSource.__to_binding(source), assetInfo);
 	}
 
 	deleteAsset(filename: string) {
@@ -681,7 +633,7 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 		return assets.map(asset => {
 			return Object.defineProperties(asset, {
 				info: {
-					value: JsAssetInfo.__from_binding(asset.info)
+					value: asset.info
 				},
 				source: {
 					get: () => this.__internal__getAssetSource(asset.name)
@@ -697,7 +649,7 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 		}
 		return Object.defineProperties(asset, {
 			info: {
-				value: JsAssetInfo.__from_binding(asset.info)
+				value: asset.info
 			},
 			source: {
 				get: () => this.__internal__getAssetSource(asset.name)
@@ -1117,36 +1069,49 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 		);
 	}
 
-	#rebuildModuleCaller = ((compilation: Compilation) =>
-		new MergeCaller(
-			(args: Array<[string, (err: Error, m: Module) => void]>) => {
-				compilation.#inner.rebuildModule(
-					args.map(item => item[0]),
-					(err: Error, modules: JsModule[]) => {
-						for (const [id, callback] of args) {
-							const m = modules.find(item => item.moduleIdentifier === id);
-							if (m) {
-								callback(err, Module.__from_binding(m, compilation));
-							} else {
-								callback(err || new Error("module no found"), null as any);
-							}
-						}
+	#rebuildModuleTask = new AsyncTask<string, Module>(
+		(moduleIdentifiers, doneWork) => {
+			this.#inner.rebuildModule(
+				moduleIdentifiers,
+				(err: Error | null, modules: Module[]) => {
+					/*
+					 * 	TODO:
+					 *	batch all call parameters, once a module is failed, we cannot know which module
+					 * 	is failed to rebuild, we have to make all modules failed, this should be improved
+					 *	in the future
+					 */
+					if (err) {
+						doneWork(new Array(moduleIdentifiers.length).fill([err, null]));
+					} else {
+						doneWork(modules.map(module => [null, module]));
 					}
-				);
-			},
-			10
-		))(this);
+				}
+			);
+		}
+	);
 
-	rebuildModule(m: Module, f: (err: Error, m: Module) => void) {
-		this.#rebuildModuleCaller.push([m.identifier(), f]);
+	rebuildModule(
+		module: Module,
+		f: (err: Error | null, module: Module | null) => void
+	) {
+		this.#rebuildModuleTask.exec(module.identifier(), f);
 	}
 
 	addRuntimeModule(chunk: Chunk, runtimeModule: RuntimeModule) {
 		runtimeModule.attach(this, chunk, this.chunkGraph);
 		this.#inner.addRuntimeModule(
-			chunk.__internal__innerUkey(),
+			Chunk.__to_binding(chunk),
 			RuntimeModule.__to_binding(this, runtimeModule)
 		);
+	}
+
+	addInclude(
+		context: string,
+		dependency: ReturnType<typeof EntryPlugin.createDependency>,
+		options: EntryOptions,
+		callback: (err?: null | WebpackError, module?: Module) => void
+	) {
+		this.#addIncludeDispatcher.call(context, dependency, options, callback);
 	}
 
 	/**
@@ -1216,7 +1181,7 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 	__internal__getChunks(): Chunk[] {
 		return this.#inner
 			.getChunks()
-			.map(c => Chunk.__from_binding(c, this.#inner));
+			.map(binding => Chunk.__from_binding(binding));
 	}
 
 	/**
@@ -1226,6 +1191,14 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 	 */
 	__internal_getInner() {
 		return this.#inner;
+	}
+
+	get __internal__shutdown() {
+		return this.#shutdown;
+	}
+
+	set __internal__shutdown(shutdown) {
+		this.#shutdown = shutdown;
 	}
 
 	seal() {}
@@ -1249,6 +1222,72 @@ BREAKING CHANGE: Asset processing hooks in Compilation has been merged into a si
 	static PROCESS_ASSETS_STAGE_REPORT = 5000;
 }
 
+// The AddIncludeDispatcher class has two responsibilities:
+//
+// 1. It is responsible for combining multiple addInclude calls that occur within the same event loop.
+// The purpose of this is to send these combined calls to the add_include method on the Rust side in a unified manner, thereby optimizing the call process and avoiding the overhead of multiple scattered calls.
+//
+// 2. It should be noted that the add_include method on the Rust side has a limitation. It does not allow multiple calls to execute in parallel.
+// Based on this limitation, the AddIncludeDispatcher class needs to properly coordinate and schedule the calls to ensure compliance with this execution rule.
+class AddIncludeDispatcher {
+	#inner: binding.JsCompilation["addInclude"];
+	#running: boolean;
+	#args: [
+		string,
+		binding.EntryDependency,
+		binding.JsEntryOptions | undefined
+	][] = [];
+	#cbs: ((err?: null | WebpackError, module?: Module) => void)[] = [];
+
+	#execute = () => {
+		if (this.#running) {
+			return;
+		}
+
+		const args = this.#args;
+		this.#args = [];
+		const cbs = this.#cbs;
+		this.#cbs = [];
+		this.#inner(args, (wholeErr, results) => {
+			if (this.#args.length !== 0) {
+				queueMicrotask(this.#execute.bind(this));
+			}
+
+			if (wholeErr) {
+				const webpackError = new WebpackError(wholeErr.message);
+				for (const cb of cbs) {
+					cb(webpackError);
+				}
+				return;
+			}
+			for (let i = 0; i < results.length; i++) {
+				const [errMsg, module] = results[i];
+				const cb = cbs[i];
+				cb(errMsg ? new WebpackError(errMsg) : null, module);
+			}
+		});
+	};
+
+	constructor(binding: binding.JsCompilation["addInclude"]) {
+		this.#inner = binding;
+		this.#running = false;
+	}
+
+	call(
+		context: string,
+		dependency: ReturnType<typeof EntryPlugin.createDependency>,
+		options: EntryOptions,
+		callback: (err?: null | WebpackError, module?: Module) => void
+	) {
+		if (this.#args.length === 0) {
+			queueMicrotask(this.#execute.bind(this));
+		}
+
+		this.#args.push([context, dependency, options as any]);
+		this.#cbs.push(callback);
+	}
+}
+
 export class EntryData {
 	dependencies: Dependency[];
 	includeDependencies: Dependency[];
@@ -1259,10 +1298,8 @@ export class EntryData {
 	}
 
 	private constructor(binding: binding.JsEntryData) {
-		this.dependencies = binding.dependencies.map(Dependency.__from_binding);
-		this.includeDependencies = binding.includeDependencies.map(
-			Dependency.__from_binding
-		);
+		this.dependencies = binding.dependencies;
+		this.includeDependencies = binding.includeDependencies;
 		this.options = binding.options;
 	}
 }

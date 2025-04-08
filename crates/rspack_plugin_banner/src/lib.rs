@@ -1,20 +1,20 @@
 #![feature(let_chains)]
 
-use std::fmt::{self, Debug};
-use std::sync::LazyLock;
+use std::{
+  fmt::{self, Debug},
+  sync::LazyLock,
+};
 
 use cow_utils::CowUtils;
 use futures::future::BoxFuture;
 use regex::Regex;
 use rspack_core::{
-  rspack_sources::{BoxSource, ConcatSource, RawSource, SourceExt},
-  to_comment, Chunk, Compilation, CompilationProcessAssets, FilenameTemplate, Logger, PathData,
-  Plugin,
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt},
+  to_comment, Chunk, Compilation, CompilationProcessAssets, Filename, Logger, PathData, Plugin,
 };
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_util::asset_condition::AssetConditions;
-use rspack_util::infallible::ResultInfallibleExt as _;
 
 #[derive(Debug)]
 pub struct BannerPluginOptions {
@@ -125,14 +125,14 @@ impl BannerPlugin {
     {
       ConcatSource::new([
         old_source,
-        RawSource::from("\n").boxed(),
-        RawSource::from(comment).boxed(),
+        RawStringSource::from_static("\n").boxed(),
+        RawStringSource::from(comment).boxed(),
       ])
       .boxed()
     } else {
       ConcatSource::new([
-        RawSource::from(comment).boxed(),
-        RawSource::from("\n").boxed(),
+        RawStringSource::from(comment).boxed(),
+        RawStringSource::from_static("\n").boxed(),
         old_source,
       ])
       .boxed()
@@ -186,18 +186,22 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       };
       let comment = compilation
         .get_path(
-          &FilenameTemplate::from(banner),
+          &Filename::from(banner),
           PathData::default()
             .chunk_hash_optional(chunk.rendered_hash(
-              &compilation.chunk_hashes_results,
+              &compilation.chunk_hashes_artifact,
               compilation.options.output.hash_digest_length,
             ))
-            .chunk_id_optional(chunk.id())
-            .chunk_name_optional(chunk.name_for_filename_template())
+            .chunk_id_optional(
+              chunk
+                .id(&compilation.chunk_ids_artifact)
+                .map(|id| id.as_str()),
+            )
+            .chunk_name_optional(chunk.name_for_filename_template(&compilation.chunk_ids_artifact))
             .hash(&hash)
             .filename(file),
         )
-        .always_ok();
+        .await?;
       updates.push((file.clone(), comment));
     }
   }

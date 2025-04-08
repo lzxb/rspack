@@ -1,9 +1,11 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
   block_promise, AffectType, AsContextDependency, AsModuleDependency, Dependency,
   DependencyCategory, DependencyId, DependencyRange, DependencyTemplate, DependencyType,
   RuntimeGlobals,
 };
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct RequireEnsureDependency {
   id: DependencyId,
@@ -27,6 +29,7 @@ impl RequireEnsureDependency {
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for RequireEnsureDependency {
   fn id(&self) -> &rspack_core::DependencyId {
     &self.id
@@ -51,6 +54,7 @@ impl Dependency for RequireEnsureDependency {
 
 impl AsModuleDependency for RequireEnsureDependency {}
 
+#[cacheable_dyn]
 impl DependencyTemplate for RequireEnsureDependency {
   fn apply(
     &self,
@@ -97,10 +101,6 @@ impl DependencyTemplate for RequireEnsureDependency {
         None,
       );
     }
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
   }
 
   fn update_hash(

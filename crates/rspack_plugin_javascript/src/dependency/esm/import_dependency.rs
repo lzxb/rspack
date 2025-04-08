@@ -1,11 +1,14 @@
-use rspack_core::{
-  create_exports_object_referenced, module_namespace_promise, Compilation, DependencyRange,
-  DependencyType, ExportsType, ExtendedReferencedExport, ImportAttributes, ModuleGraph,
-  ReferencedExport, RuntimeSpec,
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsOption, AsPreset, AsVec},
 };
-use rspack_core::{AsContextDependency, Dependency};
-use rspack_core::{DependencyCategory, DependencyId, DependencyTemplate};
-use rspack_core::{ModuleDependency, TemplateContext, TemplateReplaceSource};
+use rspack_core::{
+  create_exports_object_referenced, module_namespace_promise, AsContextDependency, Dependency,
+  DependencyCategory, DependencyId, DependencyRange, DependencyTemplate, DependencyType,
+  DynamicDependencyTemplate, DynamicDependencyTemplateType, ExportsType, ExtendedReferencedExport,
+  FactorizeInfo, ImportAttributes, ModuleDependency, ModuleGraph, ReferencedExport,
+  TemplateContext, TemplateReplaceSource,
+};
 use swc_core::ecma::atoms::Atom;
 
 use super::create_resource_identifier_for_esm_dependency;
@@ -22,8 +25,7 @@ pub fn create_import_dependency_referenced_exports(
         let Some(strict) = mg
           .get_parent_module(dependency_id)
           .and_then(|id| mg.module_by_identifier(id))
-          .and_then(|m| m.build_meta())
-          .map(|bm| bm.strict_esm_module)
+          .map(|m| m.build_meta().strict_esm_module)
         else {
           return create_exports_object_referenced();
         };
@@ -52,14 +54,18 @@ pub fn create_import_dependency_referenced_exports(
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ImportDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   pub request: Atom,
   pub range: DependencyRange,
-  referenced_exports: Option<Vec<Atom>>,
-  attributes: Option<ImportAttributes>,
-  resource_identifier: String,
+  #[cacheable(with=AsOption<AsVec<AsPreset>>)]
+  pub referenced_exports: Option<Vec<Atom>>,
+  pub attributes: Option<ImportAttributes>,
+  pub resource_identifier: String,
+  pub factorize_info: FactorizeInfo,
 }
 
 impl ImportDependency {
@@ -78,10 +84,12 @@ impl ImportDependency {
       referenced_exports,
       attributes,
       resource_identifier,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ImportDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -120,6 +128,7 @@ impl Dependency for ImportDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ImportDependency {
   fn request(&self) -> &str {
     &self.request
@@ -132,43 +141,62 @@ impl ModuleDependency for ImportDependency {
   fn set_request(&mut self, request: String) {
     self.request = request.into();
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ImportDependency {
-  fn apply(
+  fn dynamic_dependency_template(&self) -> Option<DynamicDependencyTemplateType> {
+    Some(ImportDependencyTemplate::template_type())
+  }
+}
+
+impl AsContextDependency for ImportDependency {}
+
+#[cacheable]
+#[derive(Debug, Default)]
+pub struct ImportDependencyTemplate;
+
+impl ImportDependencyTemplate {
+  pub fn template_type() -> DynamicDependencyTemplateType {
+    DynamicDependencyTemplateType::DependencyType(DependencyType::DynamicImport)
+  }
+}
+
+impl DynamicDependencyTemplate for ImportDependencyTemplate {
+  fn render(
     &self,
+    dep: &dyn DependencyTemplate,
     source: &mut TemplateReplaceSource,
     code_generatable_context: &mut TemplateContext,
   ) {
+    let dep = dep
+      .as_any()
+      .downcast_ref::<ImportDependency>()
+      .expect("ImportDependencyTemplate can only be applied to ImportDependency");
+    let range = dep.range().expect("ImportDependency should have range");
     let module_graph = code_generatable_context.compilation.get_module_graph();
-    let block = module_graph.get_parent_block(&self.id);
+    let block = module_graph.get_parent_block(dep.id());
     source.replace(
-      self.range.start,
-      self.range.end,
+      range.start,
+      range.end,
       module_namespace_promise(
         code_generatable_context,
-        &self.id,
+        dep.id(),
         block,
-        &self.request,
-        self.dependency_type().as_str(),
+        dep.request(),
+        dep.dependency_type().as_str(),
         false,
       )
       .as_str(),
       None,
     );
   }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
-  }
 }
-
-impl AsContextDependency for ImportDependency {}

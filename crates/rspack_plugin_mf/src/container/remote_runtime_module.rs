@@ -1,8 +1,9 @@
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
-  ChunkUkey, Compilation, DependenciesBlock, RuntimeModule, RuntimeModuleStage, SourceType,
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
+  ChunkGraph, ChunkUkey, Compilation, DependenciesBlock, ModuleId, RuntimeModule,
+  RuntimeModuleStage, SourceType,
 };
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -28,6 +29,7 @@ impl RemoteRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for RemoteRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
@@ -37,7 +39,7 @@ impl RuntimeModule for RemoteRuntimeModule {
     RuntimeModuleStage::Attach
   }
 
-  fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+  async fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
     let chunk_ukey = self
       .chunk
       .expect("should have chunk in <RemoteRuntimeModule as RuntimeModule>::generate");
@@ -45,7 +47,7 @@ impl RuntimeModule for RemoteRuntimeModule {
     let mut chunk_to_remotes_mapping = FxHashMap::default();
     let mut id_to_remote_data_mapping = FxHashMap::default();
     let module_graph = compilation.get_module_graph();
-    for chunk in chunk.get_all_async_chunks(&compilation.chunk_group_by_ukey) {
+    for chunk in chunk.get_all_referenced_chunks(&compilation.chunk_group_by_ukey) {
       let modules = compilation
         .chunk_graph
         .get_chunk_modules_iterable_by_source_type(&chunk, SourceType::Remote, &module_graph);
@@ -55,19 +57,18 @@ impl RuntimeModule for RemoteRuntimeModule {
           continue;
         };
         let name = m.internal_request.as_str();
-        let id = compilation
-          .chunk_graph
-          .get_module_id(m.identifier())
+        let id = ChunkGraph::get_module_id(&compilation.module_ids_artifact, m.identifier())
           .expect("should have module_id at <RemoteRuntimeModule as RuntimeModule>::generate");
         let share_scope = m.share_scope.as_str();
         let dep = m.get_dependencies()[0];
         let external_module = module_graph
           .get_module_by_dependency_id(&dep)
           .expect("should have module");
-        let external_module_id = compilation
-          .chunk_graph
-          .get_module_id(external_module.identifier())
-          .expect("should have module_id at <RemoteRuntimeModule as RuntimeModule>::generate");
+        let external_module_id = ChunkGraph::get_module_id(
+          &compilation.module_ids_artifact,
+          external_module.identifier(),
+        )
+        .expect("should have module_id at <RemoteRuntimeModule as RuntimeModule>::generate");
         remotes.push(id.to_string());
         id_to_remote_data_mapping.insert(
           id,
@@ -85,7 +86,7 @@ impl RuntimeModule for RemoteRuntimeModule {
       let chunk = compilation.chunk_by_ukey.expect_get(&chunk);
       chunk_to_remotes_mapping.insert(
         chunk
-          .id()
+          .id(&compilation.chunk_ids_artifact)
           .expect("should have chunkId at <RemoteRuntimeModule as RuntimeModule>::generate"),
         remotes,
       );
@@ -95,7 +96,7 @@ impl RuntimeModule for RemoteRuntimeModule {
     } else {
       include_str!("./remotesLoading.js")
     };
-    Ok(RawSource::from(format!(
+    Ok(RawStringSource::from(format!(
       r#"
 __webpack_require__.remotesLoadingData = {{ chunkMapping: {chunk_mapping}, moduleIdToRemoteDataMapping: {id_to_remote_data_mapping} }};
 {remotes_loading_impl}
@@ -117,6 +118,6 @@ __webpack_require__.remotesLoadingData = {{ chunkMapping: {chunk_mapping}, modul
 struct RemoteData<'a> {
   share_scope: &'a str,
   name: &'a str,
-  external_module_id: &'a str,
+  external_module_id: &'a ModuleId,
   remote_name: &'a str,
 }

@@ -1,5 +1,6 @@
 use std::{
   hash::Hash,
+  ptr::NonNull,
   sync::{Arc, RwLock},
 };
 
@@ -8,19 +9,6 @@ use cow_utils::CowUtils;
 use napi::{
   bindgen_prelude::{Buffer, FromNapiValue, Function, JsValuesTupleIntoVec, Promise, ToNapiValue},
   Env, NapiRaw,
-};
-use rspack_binding_values::{
-  JsAdditionalTreeRuntimeRequirementsArg, JsAdditionalTreeRuntimeRequirementsResult,
-  JsAfterEmitData, JsAfterResolveData, JsAfterResolveOutput, JsAfterTemplateExecutionData,
-  JsAlterAssetTagGroupsData, JsAlterAssetTagsData, JsAssetEmittedArgs,
-  JsBeforeAssetTagGenerationData, JsBeforeEmitData, JsBeforeResolveArgs, JsBeforeResolveOutput,
-  JsChunk, JsChunkAssetArgs, JsCompilationWrapper, JsContextModuleFactoryAfterResolveDataWrapper,
-  JsContextModuleFactoryAfterResolveResult, JsContextModuleFactoryBeforeResolveDataWrapper,
-  JsContextModuleFactoryBeforeResolveResult, JsCreateData, JsExecuteModuleArg, JsFactorizeArgs,
-  JsFactorizeOutput, JsModuleWrapper, JsNormalModuleFactoryCreateModuleArgs, JsResolveArgs,
-  JsResolveForSchemeArgs, JsResolveForSchemeOutput, JsResolveOutput, JsRuntimeGlobals,
-  JsRuntimeModule, JsRuntimeModuleArg, JsRuntimeRequirementInTreeArg,
-  JsRuntimeRequirementInTreeResult, ToJsCompatSource,
 };
 use rspack_collections::IdentifierSet;
 use rspack_core::{
@@ -41,15 +29,16 @@ use rspack_core::{
   CompilationStillValidModule, CompilationStillValidModuleHook, CompilationSucceedModule,
   CompilationSucceedModuleHook, CompilerAfterEmit, CompilerAfterEmitHook, CompilerAssetEmitted,
   CompilerAssetEmittedHook, CompilerCompilation, CompilerCompilationHook, CompilerEmit,
-  CompilerEmitHook, CompilerFinishMake, CompilerFinishMakeHook, CompilerMake, CompilerMakeHook,
-  CompilerShouldEmit, CompilerShouldEmitHook, CompilerThisCompilation, CompilerThisCompilationHook,
-  ContextModuleFactoryAfterResolve, ContextModuleFactoryAfterResolveHook,
-  ContextModuleFactoryBeforeResolve, ContextModuleFactoryBeforeResolveHook, ExecuteModuleId,
-  ModuleFactoryCreateData, ModuleIdentifier, NormalModuleCreateData,
-  NormalModuleFactoryAfterResolve, NormalModuleFactoryAfterResolveHook,
-  NormalModuleFactoryBeforeResolve, NormalModuleFactoryBeforeResolveHook,
-  NormalModuleFactoryCreateModule, NormalModuleFactoryCreateModuleHook,
-  NormalModuleFactoryFactorize, NormalModuleFactoryFactorizeHook, NormalModuleFactoryResolve,
+  CompilerEmitHook, CompilerFinishMake, CompilerFinishMakeHook, CompilerId, CompilerMake,
+  CompilerMakeHook, CompilerShouldEmit, CompilerShouldEmitHook, CompilerThisCompilation,
+  CompilerThisCompilationHook, ContextModuleFactoryAfterResolve,
+  ContextModuleFactoryAfterResolveHook, ContextModuleFactoryBeforeResolve,
+  ContextModuleFactoryBeforeResolveHook, ExecuteModuleId, Module, ModuleFactoryCreateData,
+  ModuleIdentifier, NormalModuleCreateData, NormalModuleFactoryAfterResolve,
+  NormalModuleFactoryAfterResolveHook, NormalModuleFactoryBeforeResolve,
+  NormalModuleFactoryBeforeResolveHook, NormalModuleFactoryCreateModule,
+  NormalModuleFactoryCreateModuleHook, NormalModuleFactoryFactorize,
+  NormalModuleFactoryFactorizeHook, NormalModuleFactoryResolve,
   NormalModuleFactoryResolveForScheme, NormalModuleFactoryResolveForSchemeHook,
   NormalModuleFactoryResolveHook, NormalModuleFactoryResolveResult, ResourceData, RuntimeGlobals,
   Scheme,
@@ -67,6 +56,35 @@ use rspack_plugin_html::{
   HtmlPluginBeforeAssetTagGenerationHook, HtmlPluginBeforeEmit, HtmlPluginBeforeEmitHook,
 };
 use rspack_plugin_javascript::{JavascriptModulesChunkHash, JavascriptModulesChunkHashHook};
+use rspack_plugin_rsdoctor::{
+  RsdoctorAssetPatch, RsdoctorChunkGraph, RsdoctorModuleGraph, RsdoctorModuleIdsPatch,
+  RsdoctorModuleSourcesPatch, RsdoctorPluginAssets, RsdoctorPluginAssetsHook,
+  RsdoctorPluginChunkGraph, RsdoctorPluginChunkGraphHook, RsdoctorPluginModuleGraph,
+  RsdoctorPluginModuleGraphHook, RsdoctorPluginModuleIds, RsdoctorPluginModuleIdsHook,
+  RsdoctorPluginModuleSources, RsdoctorPluginModuleSourcesHook,
+};
+use rspack_plugin_runtime::{
+  CreateScriptData, LinkPrefetchData, LinkPreloadData, RuntimePluginCreateScript,
+  RuntimePluginCreateScriptHook, RuntimePluginLinkPrefetch, RuntimePluginLinkPrefetchHook,
+  RuntimePluginLinkPreload, RuntimePluginLinkPreloadHook,
+};
+
+use crate::{
+  JsAdditionalTreeRuntimeRequirementsArg, JsAdditionalTreeRuntimeRequirementsResult,
+  JsAfterEmitData, JsAfterResolveData, JsAfterResolveOutput, JsAfterTemplateExecutionData,
+  JsAlterAssetTagGroupsData, JsAlterAssetTagsData, JsAssetEmittedArgs,
+  JsBeforeAssetTagGenerationData, JsBeforeEmitData, JsBeforeResolveArgs, JsBeforeResolveOutput,
+  JsChunkAssetArgs, JsChunkWrapper, JsCompilationWrapper,
+  JsContextModuleFactoryAfterResolveDataWrapper, JsContextModuleFactoryAfterResolveResult,
+  JsContextModuleFactoryBeforeResolveDataWrapper, JsContextModuleFactoryBeforeResolveResult,
+  JsCreateData, JsCreateScriptData, JsExecuteModuleArg, JsFactorizeArgs, JsFactorizeOutput,
+  JsLinkPrefetchData, JsLinkPreloadData, JsNormalModuleFactoryCreateModuleArgs, JsResolveArgs,
+  JsResolveForSchemeArgs, JsResolveForSchemeOutput, JsResolveOutput, JsRsdoctorAssetPatch,
+  JsRsdoctorChunkGraph, JsRsdoctorModuleGraph, JsRsdoctorModuleIdsPatch,
+  JsRsdoctorModuleSourcesPatch, JsRuntimeGlobals, JsRuntimeModule, JsRuntimeModuleArg,
+  JsRuntimeRequirementInTreeArg, JsRuntimeRequirementInTreeResult, ModuleObject,
+  ToJsCompatSourceOwned,
+};
 
 #[napi(object)]
 pub struct JsTap<'f> {
@@ -147,7 +165,7 @@ impl<T: 'static + JsValuesTupleIntoVec, R> Clone for RegisterJsTapsCache<T, R> {
 }
 
 impl<T: 'static + JsValuesTupleIntoVec, R> RegisterJsTapsCache<T, R> {
-  pub fn new(cache: bool, _sync: bool) -> Self {
+  pub fn new(cache: bool) -> Self {
     if cache {
       Self::Cache(Default::default())
     } else {
@@ -161,11 +179,10 @@ impl<T: 'static + ToNapiValue, R: 'static + FromNapiValue> RegisterJsTapsInner<T
     register: RegisterFunction<T, R>,
     non_skippable_registers: Option<NonSkippableRegisters>,
     cache: bool,
-    sync: bool,
   ) -> Self {
     Self {
       register,
-      cache: RegisterJsTapsCache::new(cache, sync),
+      cache: RegisterJsTapsCache::new(cache),
       non_skippable_registers,
     }
   }
@@ -206,42 +223,6 @@ impl<T: 'static + ToNapiValue, R: 'static + FromNapiValue> RegisterJsTapsInner<T
     self.register.call_with_sync(used_stages).await
   }
 
-  pub fn call_register_blocking(
-    &self,
-    hook: &impl Hook,
-  ) -> rspack_error::Result<RegisterFunctionOutput<T, R>> {
-    if let RegisterJsTapsCache::Cache(rw) = &self.cache {
-      let cache = {
-        #[allow(clippy::unwrap_used)]
-        rw.read().unwrap().clone()
-      };
-      Ok(match cache {
-        Some(js_taps) => js_taps,
-        None => {
-          let js_taps = self.call_register_blocking_impl(hook)?;
-          {
-            #[allow(clippy::unwrap_used)]
-            let mut cache = rw.write().unwrap();
-            *cache = Some(js_taps.clone());
-          }
-          js_taps
-        }
-      })
-    } else {
-      let js_taps = self.call_register_blocking_impl(hook)?;
-      Ok(js_taps)
-    }
-  }
-
-  fn call_register_blocking_impl(
-    &self,
-    hook: &impl Hook,
-  ) -> rspack_error::Result<RegisterFunctionOutput<T, R>> {
-    let mut used_stages = Vec::from_iter(hook.used_stages());
-    used_stages.sort();
-    self.register.blocking_call_with_sync(used_stages)
-  }
-
   fn clear_cache(&self) {
     match &self.cache {
       RegisterJsTapsCache::NoCache => {}
@@ -262,12 +243,12 @@ impl<T: 'static + ToNapiValue, R: 'static + FromNapiValue> RegisterJsTapsInner<T
 ///       be sync since calling a ThreadsafeFunction is async, for now it's only used by
 ///       execute_module, which strongly required sync call.
 macro_rules! define_register {
-  ($name:ident, tap = $tap_name:ident<$arg:ty, $ret:ty> @ $tap_hook:ty, cache = $cache:literal, sync = $sync:tt, kind = $kind:expr, skip = $skip:tt,) => {
-    define_register!(@BASE $name, $tap_name<$arg, $ret>, $cache, $sync);
-    define_register!(@SKIP $name, $arg, $ret, $cache, $sync, $skip);
-    define_register!(@INTERCEPTOR $name, $tap_name, $tap_hook, $cache, $kind, $sync);
+  ($name:ident, tap = $tap_name:ident<$arg:ty, $ret:ty> @ $tap_hook:ty, cache = $cache:literal, kind = $kind:expr, skip = $skip:tt,) => {
+    define_register!(@BASE $name, $tap_name<$arg, $ret>, $cache);
+    define_register!(@SKIP $name, $arg, $ret, $cache, $skip);
+    define_register!(@INTERCEPTOR $name, $tap_name, $tap_hook, $cache, $kind);
   };
-  (@BASE $name:ident, $tap_name:ident<$arg:ty, $ret:ty>, $cache:literal, $sync:literal) => {
+  (@BASE $name:ident, $tap_name:ident<$arg:ty, $ret:ty>, $cache:literal) => {
     #[derive(Clone)]
     pub struct $name {
       inner: RegisterJsTapsInner<$arg, $ret>,
@@ -294,16 +275,16 @@ macro_rules! define_register {
       }
     }
   };
-  (@SKIP $name:ident, $arg:ty, $ret:ty, $cache:literal, $sync:literal, $skip:literal) => {
+  (@SKIP $name:ident, $arg:ty, $ret:ty, $cache:literal, $skip:literal) => {
     impl $name {
       pub fn new(register: RegisterFunction<$arg, $ret>, non_skippable_registers: NonSkippableRegisters) -> Self {
         Self {
-          inner: RegisterJsTapsInner::new(register, $skip.then_some(non_skippable_registers), $cache, $sync),
+          inner: RegisterJsTapsInner::new(register, $skip.then_some(non_skippable_registers), $cache),
         }
       }
     }
   };
-  (@INTERCEPTOR $name:ident, $tap_name:ident, $tap_hook:ty, $cache:literal, $kind:expr, false) => {
+  (@INTERCEPTOR $name:ident, $tap_name:ident, $tap_hook:ty, $cache:literal, $kind:expr) => {
     #[async_trait]
     impl Interceptor<$tap_hook> for $name {
       async fn call(
@@ -314,24 +295,6 @@ macro_rules! define_register {
           return Ok(Vec::new());
         }
         let js_taps = self.inner.call_register(hook).await?;
-        let js_taps = js_taps
-          .iter()
-          .map(|t| Box::new($tap_name::new(t.clone())) as <$tap_hook as Hook>::Tap)
-          .collect();
-        Ok(js_taps)
-      }
-    }
-  };
-  (@INTERCEPTOR $name:ident, $tap_name:ident, $tap_hook:ty, $cache:literal, $kind:expr, true) => {
-    impl Interceptor<$tap_hook> for $name {
-      fn call_blocking(
-        &self,
-        hook: &$tap_hook,
-      ) -> rspack_error::Result<Vec<<$tap_hook as Hook>::Tap>> {
-        if let Some(non_skippable_registers) = &self.inner.non_skippable_registers && !non_skippable_registers.is_non_skippable(&$kind) {
-          return Ok(Vec::new());
-        }
-        let js_taps = self.inner.call_register_blocking(hook)?;
         let js_taps = js_taps
           .iter()
           .map(|t| Box::new($tap_name::new(t.clone())) as <$tap_hook as Hook>::Tap)
@@ -386,6 +349,14 @@ pub enum RegisterJsTapKind {
   HtmlPluginAfterTemplateExecution,
   HtmlPluginBeforeEmit,
   HtmlPluginAfterEmit,
+  RuntimePluginCreateScript,
+  RuntimePluginLinkPreload,
+  RuntimePluginLinkPrefetch,
+  RsdoctorPluginModuleGraph,
+  RsdoctorPluginChunkGraph,
+  RsdoctorPluginModuleIds,
+  RsdoctorPluginModuleSources,
+  RsdoctorPluginAssets,
 }
 
 #[derive(Default, Clone)]
@@ -438,17 +409,17 @@ pub struct RegisterJsTaps {
   )]
   pub register_compiler_asset_emitted_taps: RegisterFunction<JsAssetEmittedArgs, Promise<()>>,
   #[napi(
-    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsModule) => void); stage: number; }>"
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: Module) => void); stage: number; }>"
   )]
-  pub register_compilation_build_module_taps: RegisterFunction<JsModuleWrapper, ()>,
+  pub register_compilation_build_module_taps: RegisterFunction<ModuleObject, ()>,
   #[napi(
-    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsModule) => void); stage: number; }>"
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: Module) => void); stage: number; }>"
   )]
-  pub register_compilation_still_valid_module_taps: RegisterFunction<JsModuleWrapper, ()>,
+  pub register_compilation_still_valid_module_taps: RegisterFunction<ModuleObject, ()>,
   #[napi(
-    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsModule) => void); stage: number; }>"
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: Module) => void); stage: number; }>"
   )]
-  pub register_compilation_succeed_module_taps: RegisterFunction<JsModuleWrapper, ()>,
+  pub register_compilation_succeed_module_taps: RegisterFunction<ModuleObject, ()>,
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsExecuteModuleArg) => void); stage: number; }>"
   )]
@@ -456,14 +427,14 @@ pub struct RegisterJsTaps {
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsAdditionalTreeRuntimeRequirementsArg) => JsAdditionalTreeRuntimeRequirementsResult | undefined); stage: number; }>"
   )]
-  pub register_compilation_additional_tree_runtime_requirements: RegisterFunction<
+  pub register_compilation_additional_tree_runtime_requirements_taps: RegisterFunction<
     JsAdditionalTreeRuntimeRequirementsArg,
     Option<JsAdditionalTreeRuntimeRequirementsResult>,
   >,
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsRuntimeRequirementInTreeArg) => JsRuntimeRequirementInTreeResult | undefined); stage: number; }>"
   )]
-  pub register_compilation_runtime_requirement_in_tree:
+  pub register_compilation_runtime_requirement_in_tree_taps:
     RegisterFunction<JsRuntimeRequirementInTreeArg, Option<JsRuntimeRequirementInTreeResult>>,
 
   #[napi(
@@ -492,7 +463,7 @@ pub struct RegisterJsTaps {
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsChunk) => Buffer); stage: number; }>"
   )]
-  pub register_compilation_chunk_hash_taps: RegisterFunction<JsChunk, Buffer>,
+  pub register_compilation_chunk_hash_taps: RegisterFunction<JsChunkWrapper, Buffer>,
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsChunkAssetArgs) => void); stage: number; }>"
   )]
@@ -558,7 +529,8 @@ pub struct RegisterJsTaps {
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsChunk) => Buffer); stage: number; }>"
   )]
-  pub register_javascript_modules_chunk_hash_taps: RegisterFunction<JsChunk, Buffer>,
+  pub register_javascript_modules_chunk_hash_taps: RegisterFunction<JsChunkWrapper, Buffer>,
+  // html plugin
   #[napi(
     ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsBeforeAssetTagGenerationData) => JsBeforeAssetTagGenerationData); stage: number; }>"
   )]
@@ -589,6 +561,48 @@ pub struct RegisterJsTaps {
   )]
   pub register_html_plugin_after_emit_taps:
     RegisterFunction<JsAfterEmitData, Promise<JsAfterEmitData>>,
+  // runtime plugin
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsCreateScriptData) => String); stage: number; }>"
+  )]
+  pub register_runtime_plugin_create_script_taps:
+    RegisterFunction<JsCreateScriptData, Option<String>>,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsLinkPreloadData) => String); stage: number; }>"
+  )]
+  pub register_runtime_plugin_link_preload_taps:
+    RegisterFunction<JsLinkPreloadData, Option<String>>,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsLinkPrefetchData) => String); stage: number; }>"
+  )]
+  pub register_runtime_plugin_link_prefetch_taps:
+    RegisterFunction<JsLinkPrefetchData, Option<String>>,
+  // rsdoctor plugin
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorModuleGraph) => Promise<boolean | undefined>); stage: number; }>"
+  )]
+  pub register_rsdoctor_plugin_module_graph_taps:
+    RegisterFunction<JsRsdoctorModuleGraph, Promise<Option<bool>>>,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorChunkGraph) => Promise<boolean | undefined>); stage: number; }>"
+  )]
+  pub register_rsdoctor_plugin_chunk_graph_taps:
+    RegisterFunction<JsRsdoctorChunkGraph, Promise<Option<bool>>>,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorModuleIdsPatch) => Promise<boolean | undefined>); stage: number; }>"
+  )]
+  pub register_rsdoctor_plugin_module_ids_taps:
+    RegisterFunction<JsRsdoctorModuleIdsPatch, Promise<Option<bool>>>,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorModuleSourcesPatch) => Promise<boolean | undefined>); stage: number; }>"
+  )]
+  pub register_rsdoctor_plugin_module_sources_taps:
+    RegisterFunction<JsRsdoctorModuleSourcesPatch, Promise<Option<bool>>>,
+  #[napi(
+    ts_type = "(stages: Array<number>) => Array<{ function: ((arg: JsRsdoctorAssetPatch) => Promise<boolean | undefined>); stage: number; }>"
+  )]
+  pub register_rsdoctor_plugin_assets_taps:
+    RegisterFunction<JsRsdoctorAssetPatch, Promise<Option<bool>>>,
 }
 
 /* Compiler Hooks */
@@ -596,7 +610,6 @@ define_register!(
   RegisterCompilerThisCompilationTaps,
   tap = CompilerThisCompilationTap<JsCompilationWrapper, ()> @ CompilerThisCompilationHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerThisCompilation,
   skip = false,
 );
@@ -604,7 +617,6 @@ define_register!(
   RegisterCompilerCompilationTaps,
   tap = CompilerCompilationTap<JsCompilationWrapper, ()> @ CompilerCompilationHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerCompilation,
   skip = true,
 );
@@ -612,7 +624,6 @@ define_register!(
   RegisterCompilerMakeTaps,
   tap = CompilerMakeTap<JsCompilationWrapper, Promise<()>> @ CompilerMakeHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerMake,
   skip = true,
 );
@@ -620,7 +631,6 @@ define_register!(
   RegisterCompilerFinishMakeTaps,
   tap = CompilerFinishMakeTap<JsCompilationWrapper, Promise<()>> @ CompilerFinishMakeHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerFinishMake,
   skip = true,
 );
@@ -628,7 +638,6 @@ define_register!(
   RegisterCompilerShouldEmitTaps,
   tap = CompilerShouldEmitTap<JsCompilationWrapper, Option<bool>> @ CompilerShouldEmitHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerShouldEmit,
   skip = true,
 );
@@ -636,7 +645,6 @@ define_register!(
   RegisterCompilerEmitTaps,
   tap = CompilerEmitTap<(), Promise<()>> @ CompilerEmitHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerEmit,
   skip = true,
 );
@@ -644,7 +652,6 @@ define_register!(
   RegisterCompilerAfterEmitTaps,
   tap = CompilerAfterEmitTap<(), Promise<()>> @ CompilerAfterEmitHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilerAfterEmit,
   skip = true,
 );
@@ -652,7 +659,6 @@ define_register!(
   RegisterCompilerAssetEmittedTaps,
   tap = CompilerAssetEmittedTap<JsAssetEmittedArgs, Promise<()>> @ CompilerAssetEmittedHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilerAssetEmitted,
   skip = true,
 );
@@ -660,25 +666,22 @@ define_register!(
 /* Compilation Hooks */
 define_register!(
   RegisterCompilationBuildModuleTaps,
-  tap = CompilationBuildModuleTap<JsModuleWrapper, ()> @ CompilationBuildModuleHook,
+  tap = CompilationBuildModuleTap<ModuleObject, ()> @ CompilationBuildModuleHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationBuildModule,
   skip = true,
 );
 define_register!(
   RegisterCompilationStillValidModuleTaps,
-  tap = CompilationStillValidModuleTap<JsModuleWrapper, ()> @ CompilationStillValidModuleHook,
+  tap = CompilationStillValidModuleTap<ModuleObject, ()> @ CompilationStillValidModuleHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationStillValidModule,
   skip = true,
 );
 define_register!(
   RegisterCompilationSucceedModuleTaps,
-  tap = CompilationSucceedModuleTap<JsModuleWrapper, ()> @ CompilationSucceedModuleHook,
+  tap = CompilationSucceedModuleTap<ModuleObject, ()> @ CompilationSucceedModuleHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationSucceedModule,
   skip = true,
 );
@@ -686,7 +689,6 @@ define_register!(
   RegisterCompilationExecuteModuleTaps,
   tap = CompilationExecuteModuleTap<JsExecuteModuleArg, ()> @ CompilationExecuteModuleHook,
   cache = false,
-  sync = true,
   kind = RegisterJsTapKind::CompilationExecuteModule,
   skip = true,
 );
@@ -694,7 +696,6 @@ define_register!(
   RegisterCompilationFinishModulesTaps,
   tap = CompilationFinishModulesTap<JsCompilationWrapper, Promise<()>> @ CompilationFinishModulesHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationFinishModules,
   skip = true,
 );
@@ -702,7 +703,6 @@ define_register!(
   RegisterCompilationOptimizeModulesTaps,
   tap = CompilationOptimizeModulesTap<(), Option<bool>> @ CompilationOptimizeModulesHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationOptimizeModules,
   skip = true,
 );
@@ -710,7 +710,6 @@ define_register!(
   RegisterCompilationAfterOptimizeModulesTaps,
   tap = CompilationAfterOptimizeModulesTap<(), ()> @ CompilationAfterOptimizeModulesHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationAfterOptimizeModules,
   skip = true,
 );
@@ -718,7 +717,6 @@ define_register!(
   RegisterCompilationOptimizeTreeTaps,
   tap = CompilationOptimizeTreeTap<(), Promise<()>> @ CompilationOptimizeTreeHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationOptimizeTree,
   skip = true,
 );
@@ -726,7 +724,6 @@ define_register!(
   RegisterCompilationOptimizeChunkModulesTaps,
   tap = CompilationOptimizeChunkModulesTap<(), Promise<Option<bool>>> @ CompilationOptimizeChunkModulesHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationOptimizeChunkModules,
   skip = true,
 );
@@ -734,7 +731,6 @@ define_register!(
   RegisterCompilationAdditionalTreeRuntimeRequirementsTaps,
   tap = CompilationAdditionalTreeRuntimeRequirementsTap<JsAdditionalTreeRuntimeRequirementsArg, Option<JsAdditionalTreeRuntimeRequirementsResult>> @ CompilationAdditionalTreeRuntimeRequirementsHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationAdditionalTreeRuntimeRequirements,
   skip = true,
 );
@@ -742,7 +738,6 @@ define_register!(
   RegisterCompilationRuntimeRequirementInTreeTaps,
   tap = CompilationRuntimeRequirementInTreeTap<JsRuntimeRequirementInTreeArg, Option<JsRuntimeRequirementInTreeResult>> @ CompilationRuntimeRequirementInTreeHook,
   cache = true,
-  sync = true,
   kind = RegisterJsTapKind::CompilationRuntimeRequirementInTree,
   skip = true,
 );
@@ -750,15 +745,13 @@ define_register!(
   RegisterCompilationRuntimeModuleTaps,
   tap = CompilationRuntimeModuleTap<JsRuntimeModuleArg, Option<JsRuntimeModule>> @ CompilationRuntimeModuleHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationRuntimeModule,
   skip = true,
 );
 define_register!(
   RegisterCompilationChunkHashTaps,
-  tap = CompilationChunkHashTap<JsChunk, Buffer> @ CompilationChunkHashHook,
+  tap = CompilationChunkHashTap<JsChunkWrapper, Buffer> @ CompilationChunkHashHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationChunkHash,
   skip = true,
 );
@@ -766,7 +759,6 @@ define_register!(
   RegisterCompilationChunkAssetTaps,
   tap = CompilationChunkAssetTap<JsChunkAssetArgs, ()> @ CompilationChunkAssetHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::CompilationChunkAsset,
   skip = true,
 );
@@ -774,7 +766,6 @@ define_register!(
   RegisterCompilationProcessAssetsTaps,
   tap = CompilationProcessAssetsTap<JsCompilationWrapper, Promise<()>> @ CompilationProcessAssetsHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationProcessAssets,
   skip = true,
 );
@@ -782,7 +773,6 @@ define_register!(
   RegisterCompilationAfterProcessAssetsTaps,
   tap = CompilationAfterProcessAssetsTap<JsCompilationWrapper, ()> @ CompilationAfterProcessAssetsHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationAfterProcessAssets,
   skip = true,
 );
@@ -790,7 +780,6 @@ define_register!(
   RegisterCompilationSealTaps,
   tap = CompilationSealTap<(), ()> @ CompilationSealHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationSeal,
   skip = true,
 );
@@ -798,7 +787,6 @@ define_register!(
   RegisterCompilationAfterSealTaps,
   tap = CompilationAfterSealTap<(), Promise<()>> @ CompilationAfterSealHook,
   cache = false,
-  sync = false,
   kind = RegisterJsTapKind::CompilationAfterSeal,
   skip = true,
 );
@@ -808,7 +796,6 @@ define_register!(
   RegisterNormalModuleFactoryBeforeResolveTaps,
   tap = NormalModuleFactoryBeforeResolveTap<JsBeforeResolveArgs, Promise<JsBeforeResolveOutput>> @ NormalModuleFactoryBeforeResolveHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::NormalModuleFactoryBeforeResolve,
   skip = true,
 );
@@ -816,7 +803,6 @@ define_register!(
   RegisterNormalModuleFactoryFactorizeTaps,
   tap = NormalModuleFactoryFactorizeTap<JsFactorizeArgs, Promise<JsFactorizeOutput>> @ NormalModuleFactoryFactorizeHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::NormalModuleFactoryFactorize,
   skip = true,
 );
@@ -824,7 +810,6 @@ define_register!(
   RegisterNormalModuleFactoryResolveTaps,
   tap = NormalModuleFactoryResolveTap<JsResolveArgs, Promise<JsResolveOutput>> @ NormalModuleFactoryResolveHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::NormalModuleFactoryResolve,
   skip = true,
 );
@@ -832,7 +817,6 @@ define_register!(
   RegisterNormalModuleFactoryResolveForSchemeTaps,
   tap = NormalModuleFactoryResolveForSchemeTap<JsResolveForSchemeArgs, Promise<JsResolveForSchemeOutput>> @ NormalModuleFactoryResolveForSchemeHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::NormalModuleFactoryResolveForScheme,
   skip = true,
 );
@@ -840,7 +824,6 @@ define_register!(
   RegisterNormalModuleFactoryAfterResolveTaps,
   tap = NormalModuleFactoryAfterResolveTap<JsAfterResolveData, Promise<JsAfterResolveOutput>> @ NormalModuleFactoryAfterResolveHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::NormalModuleFactoryAfterResolve,
   skip = true,
 );
@@ -848,7 +831,6 @@ define_register!(
   RegisterNormalModuleFactoryCreateModuleTaps,
   tap = NormalModuleFactoryCreateModuleTap<JsNormalModuleFactoryCreateModuleArgs, Promise<()>> @ NormalModuleFactoryCreateModuleHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::NormalModuleFactoryCreateModule,
   skip = true,
 );
@@ -858,7 +840,6 @@ define_register!(
   RegisterContextModuleFactoryBeforeResolveTaps,
   tap = ContextModuleFactoryBeforeResolveTap<JsContextModuleFactoryBeforeResolveResult, Promise<JsContextModuleFactoryBeforeResolveResult>> @ ContextModuleFactoryBeforeResolveHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::ContextModuleFactoryBeforeResolve,
   skip = true,
 );
@@ -866,7 +847,6 @@ define_register!(
   RegisterContextModuleFactoryAfterResolveTaps,
   tap = ContextModuleFactoryAfterResolveTap<JsContextModuleFactoryAfterResolveResult, Promise<JsContextModuleFactoryAfterResolveResult>> @ ContextModuleFactoryAfterResolveHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::ContextModuleFactoryAfterResolve,
   skip = true,
 );
@@ -874,9 +854,8 @@ define_register!(
 /* JavascriptModules Hooks */
 define_register!(
   RegisterJavascriptModulesChunkHashTaps,
-  tap = JavascriptModulesChunkHashTap<JsChunk, Buffer> @ JavascriptModulesChunkHashHook,
+  tap = JavascriptModulesChunkHashTap<JsChunkWrapper, Buffer> @ JavascriptModulesChunkHashHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::JavascriptModulesChunkHash,
   skip = true,
 );
@@ -886,7 +865,6 @@ define_register!(
   RegisterHtmlPluginBeforeAssetTagGenerationTaps,
   tap = HtmlPluginBeforeAssetTagGenerationTap<JsBeforeAssetTagGenerationData, Promise<JsBeforeAssetTagGenerationData>> @ HtmlPluginBeforeAssetTagGenerationHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::HtmlPluginBeforeAssetTagGeneration,
   skip = true,
 );
@@ -895,7 +873,6 @@ define_register!(
   RegisterHtmlPluginAlterAssetTagsTaps,
   tap = HtmlPluginAlterAssetTagsTap<JsAlterAssetTagsData, Promise<JsAlterAssetTagsData>> @ HtmlPluginAlterAssetTagsHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::HtmlPluginAlterAssetTags,
   skip = true,
 );
@@ -904,7 +881,6 @@ define_register!(
   RegisterHtmlPluginAlterAssetTagGroupsTaps,
   tap = HtmlPluginAlterAssetTagGroupsTap<JsAlterAssetTagGroupsData, Promise<JsAlterAssetTagGroupsData>> @ HtmlPluginAlterAssetTagGroupsHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::HtmlPluginAlterAssetTagGroups,
   skip = true,
 );
@@ -913,7 +889,6 @@ define_register!(
   RegisterHtmlPluginAfterTemplateExecutionTaps,
   tap = HtmlPluginAfterTemplateExecutionTap<JsAfterTemplateExecutionData, Promise<JsAfterTemplateExecutionData>> @ HtmlPluginAfterTemplateExecutionHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::HtmlPluginAfterTemplateExecution,
   skip = true,
 );
@@ -922,7 +897,6 @@ define_register!(
   RegisterHtmlPluginBeforeEmitTaps,
   tap = HtmlPluginBeforeEmitTap<JsBeforeEmitData, Promise<JsBeforeEmitData>> @ HtmlPluginBeforeEmitHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::HtmlPluginBeforeEmit,
   skip = true,
 );
@@ -931,8 +905,69 @@ define_register!(
   RegisterHtmlPluginAfterEmitTaps,
   tap = HtmlPluginAfterEmitTap<JsAfterEmitData, Promise<JsAfterEmitData>> @ HtmlPluginAfterEmitHook,
   cache = true,
-  sync = false,
   kind = RegisterJsTapKind::HtmlPluginAfterEmit,
+  skip = true,
+);
+define_register!(
+  RegisterRuntimePluginCreateScriptTaps,
+  tap = RuntimePluginCreateScriptTap<JsCreateScriptData, Option<String>> @ RuntimePluginCreateScriptHook,
+  cache = true,
+  kind = RegisterJsTapKind::RuntimePluginCreateScript,
+  skip = true,
+);
+define_register!(
+  RegisterRuntimePluginLinkPreloadTaps,
+  tap = RuntimePluginLinkPreloadTap<JsLinkPreloadData, Option<String>> @ RuntimePluginLinkPreloadHook,
+  cache = true,
+  kind = RegisterJsTapKind::RuntimePluginLinkPreload,
+  skip = true,
+);
+define_register!(
+  RegisterRuntimePluginLinkPrefetchTaps,
+  tap = RuntimePluginLinkPrefetchTap<JsLinkPrefetchData, Option<String>> @ RuntimePluginLinkPrefetchHook,
+  cache = true,
+  kind = RegisterJsTapKind::RuntimePluginLinkPrefetch,
+  skip = true,
+);
+
+/* Rsdoctor Plugin Hooks */
+define_register!(
+  RegisterRsdoctorPluginModuleGraphTaps,
+  tap = RsdoctorPluginModuleGraphTap<JsRsdoctorModuleGraph, Promise<Option<bool>>> @ RsdoctorPluginModuleGraphHook,
+  cache = true,
+  kind = RegisterJsTapKind::RsdoctorPluginModuleGraph,
+  skip = true,
+);
+
+define_register!(
+  RegisterRsdoctorPluginChunkGraphTaps,
+  tap = RsdoctorPluginChunkGraphTap<JsRsdoctorChunkGraph, Promise<Option<bool>>> @ RsdoctorPluginChunkGraphHook,
+  cache = true,
+  kind = RegisterJsTapKind::RsdoctorPluginChunkGraph,
+  skip = true,
+);
+
+define_register!(
+  RegisterRsdoctorPluginAssetsTaps,
+  tap = RsdoctorPluginAssetsTap<JsRsdoctorAssetPatch, Promise<Option<bool>>> @ RsdoctorPluginAssetsHook,
+  cache = true,
+  kind = RegisterJsTapKind::RsdoctorPluginAssets,
+  skip = true,
+);
+
+define_register!(
+  RegisterRsdoctorPluginModuleIdsTaps,
+  tap = RsdoctorPluginModuleIdsTap<JsRsdoctorModuleIdsPatch, Promise<Option<bool>>> @ RsdoctorPluginModuleIdsHook,
+  cache = true,
+  kind = RegisterJsTapKind::RsdoctorPluginModuleIds,
+  skip = true,
+);
+
+define_register!(
+  RegisterRsdoctorPluginModuleSourcesTaps,
+  tap = RsdoctorPluginModuleSourcesTap<JsRsdoctorModuleSourcesPatch, Promise<Option<bool>>> @ RsdoctorPluginModuleSourcesHook,
+  cache = true,
+  kind = RegisterJsTapKind::RsdoctorPluginModuleSources,
   skip = true,
 );
 
@@ -1053,13 +1088,19 @@ impl CompilerAssetEmitted for CompilerAssetEmittedTap {
 impl CompilationBuildModule for CompilationBuildModuleTap {
   async fn run(
     &self,
-    compilation_id: CompilationId,
+    compiler_id: CompilerId,
+    _compilation_id: CompilationId,
     module: &mut BoxModule,
   ) -> rspack_error::Result<()> {
-    self
+    #[allow(clippy::unwrap_used)]
+    let _ = self
       .function
-      .call_with_sync(JsModuleWrapper::new(module.as_ref(), compilation_id, None))
-      .await
+      .call_with_sync(ModuleObject::with_ptr(
+        NonNull::new(module.as_mut() as *const dyn Module as *mut dyn Module).unwrap(),
+        compiler_id,
+      ))
+      .await?;
+    Ok(())
   }
 
   fn stage(&self) -> i32 {
@@ -1071,13 +1112,19 @@ impl CompilationBuildModule for CompilationBuildModuleTap {
 impl CompilationStillValidModule for CompilationStillValidModuleTap {
   async fn run(
     &self,
-    compilation_id: CompilationId,
+    compiler_id: CompilerId,
+    _compilation_id: CompilationId,
     module: &mut BoxModule,
   ) -> rspack_error::Result<()> {
-    self
+    #[allow(clippy::unwrap_used)]
+    let _ = self
       .function
-      .call_with_sync(JsModuleWrapper::new(module.as_ref(), compilation_id, None))
-      .await
+      .call_with_sync(ModuleObject::with_ptr(
+        NonNull::new(module.as_mut() as *const dyn Module as *mut dyn Module).unwrap(),
+        compiler_id,
+      ))
+      .await?;
+    Ok(())
   }
 
   fn stage(&self) -> i32 {
@@ -1089,13 +1136,19 @@ impl CompilationStillValidModule for CompilationStillValidModuleTap {
 impl CompilationSucceedModule for CompilationSucceedModuleTap {
   async fn run(
     &self,
-    compilation_id: CompilationId,
+    compiler_id: CompilerId,
+    _compilation_id: CompilationId,
     module: &mut BoxModule,
   ) -> rspack_error::Result<()> {
-    self
+    #[allow(clippy::unwrap_used)]
+    let _ = self
       .function
-      .call_with_sync(JsModuleWrapper::new(module.as_ref(), compilation_id, None))
-      .await
+      .call_with_sync(ModuleObject::with_ptr(
+        NonNull::new(module.as_mut() as *const dyn Module as *mut dyn Module).unwrap(),
+        compiler_id,
+      ))
+      .await?;
+    Ok(())
   }
 
   fn stage(&self) -> i32 {
@@ -1105,19 +1158,22 @@ impl CompilationSucceedModule for CompilationSucceedModuleTap {
 
 #[async_trait]
 impl CompilationExecuteModule for CompilationExecuteModuleTap {
-  fn run(
+  async fn run(
     &self,
     entry: &ModuleIdentifier,
     runtime_modules: &IdentifierSet,
     codegen_results: &CodeGenerationResults,
     id: &ExecuteModuleId,
   ) -> rspack_error::Result<()> {
-    self.function.blocking_call_with_sync(JsExecuteModuleArg {
-      entry: entry.to_string(),
-      runtime_modules: runtime_modules.iter().map(|id| id.to_string()).collect(),
-      codegen_results: codegen_results.clone().into(),
-      id: *id,
-    })
+    self
+      .function
+      .call_with_sync(JsExecuteModuleArg {
+        entry: entry.to_string(),
+        runtime_modules: runtime_modules.iter().map(|id| id.to_string()).collect(),
+        codegen_results: codegen_results.clone().into(),
+        id: *id,
+      })
+      .await
   }
 
   fn stage(&self) -> i32 {
@@ -1191,9 +1247,8 @@ impl CompilationAdditionalTreeRuntimeRequirements
     chunk_ukey: &ChunkUkey,
     runtime_requirements: &mut RuntimeGlobals,
   ) -> rspack_error::Result<()> {
-    let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
     let arg = JsAdditionalTreeRuntimeRequirementsArg {
-      chunk: JsChunk::from(chunk, compilation),
+      chunk: JsChunkWrapper::new(*chunk_ukey, compilation),
       runtime_requirements: JsRuntimeGlobals::from(*runtime_requirements),
     };
     let result = self.function.call_with_sync(arg).await?;
@@ -1210,20 +1265,20 @@ impl CompilationAdditionalTreeRuntimeRequirements
 
 #[async_trait]
 impl CompilationRuntimeRequirementInTree for CompilationRuntimeRequirementInTreeTap {
-  fn run(
+  async fn run(
     &self,
     compilation: &mut Compilation,
     chunk_ukey: &ChunkUkey,
     all_runtime_requirements: &RuntimeGlobals,
-    _runtime_requirements: &RuntimeGlobals,
+    runtime_requirements: &RuntimeGlobals,
     runtime_requirements_mut: &mut RuntimeGlobals,
   ) -> rspack_error::Result<Option<()>> {
-    let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
     let arg = JsRuntimeRequirementInTreeArg {
-      chunk: JsChunk::from(chunk, compilation),
-      runtime_requirements: JsRuntimeGlobals::from(*all_runtime_requirements),
+      chunk: JsChunkWrapper::new(*chunk_ukey, compilation),
+      all_runtime_requirements: JsRuntimeGlobals::from(*all_runtime_requirements),
+      runtime_requirements: JsRuntimeGlobals::from(*runtime_requirements),
     };
-    let result = self.function.blocking_call_with_sync(arg)?;
+    let result = self.function.call_with_sync(arg).await?;
     if let Some(result) = result {
       runtime_requirements_mut.extend(
         result
@@ -1245,18 +1300,18 @@ impl CompilationRuntimeModule for CompilationRuntimeModuleTap {
     &self,
     compilation: &mut Compilation,
     m: &ModuleIdentifier,
-    c: &ChunkUkey,
+    chunk_ukey: &ChunkUkey,
   ) -> rspack_error::Result<()> {
     let Some(module) = compilation.runtime_modules.get(m) else {
       return Ok(());
     };
-    let chunk = compilation.chunk_by_ukey.expect_get(c);
     let arg = JsRuntimeModuleArg {
       module: JsRuntimeModule {
         source: Some(
           module
-            .generate(compilation)?
-            .to_js_compat_source()
+            .generate(compilation)
+            .await?
+            .to_js_compat_source_owned()
             .unwrap_or_else(|err| panic!("Failed to generate runtime module source: {err}")),
         ),
         module_identifier: module.identifier().to_string(),
@@ -1267,7 +1322,7 @@ impl CompilationRuntimeModule for CompilationRuntimeModuleTap {
           .cow_replace("webpack/runtime/", "")
           .into_owned(),
       },
-      chunk: JsChunk::from(chunk, compilation),
+      chunk: JsChunkWrapper::new(*chunk_ukey, compilation),
     };
     if let Some(module) = self.function.call_with_sync(arg).await?
       && let Some(source) = module.source
@@ -1294,10 +1349,9 @@ impl CompilationChunkHash for CompilationChunkHashTap {
     chunk_ukey: &ChunkUkey,
     hasher: &mut RspackHash,
   ) -> rspack_error::Result<()> {
-    let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
     let result = self
       .function
-      .call_with_sync(JsChunk::from(chunk, compilation))
+      .call_with_sync(JsChunkWrapper::new(*chunk_ukey, compilation))
       .await?;
     result.hash(hasher);
     Ok(())
@@ -1316,11 +1370,10 @@ impl CompilationChunkAsset for CompilationChunkAssetTap {
     chunk_ukey: &ChunkUkey,
     file: &str,
   ) -> rspack_error::Result<()> {
-    let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
     self
       .function
       .call_with_sync(JsChunkAssetArgs {
-        chunk: JsChunk::from(chunk, compilation),
+        chunk: JsChunkWrapper::new(*chunk_ukey, compilation),
         filename: file.to_string(),
       })
       .await
@@ -1393,6 +1446,7 @@ impl NormalModuleFactoryBeforeResolve for NormalModuleFactoryBeforeResolveTap {
           .as_ref()
           .map(|issuer| issuer.to_string())
           .unwrap_or_default(),
+        issuer_layer: data.issuer_layer.clone(),
       })
       .await
     {
@@ -1429,6 +1483,7 @@ impl NormalModuleFactoryFactorize for NormalModuleFactoryFactorizeTap {
           .as_ref()
           .map(|issuer| issuer.to_string())
           .unwrap_or_default(),
+        issuer_layer: data.issuer_layer.clone(),
       })
       .await
     {
@@ -1466,6 +1521,7 @@ impl NormalModuleFactoryResolve for NormalModuleFactoryResolveTap {
           .as_ref()
           .map(|issuer| issuer.to_string())
           .unwrap_or_default(),
+        issuer_layer: data.issuer_layer.clone(),
       })
       .await
     {
@@ -1528,6 +1584,7 @@ impl NormalModuleFactoryAfterResolve for NormalModuleFactoryAfterResolveTap {
           .as_ref()
           .map(|issuer| issuer.to_string())
           .unwrap_or_default(),
+        issuer_layer: data.issuer_layer.clone(),
         file_dependencies: data
           .file_dependencies
           .clone()
@@ -1662,10 +1719,9 @@ impl JavascriptModulesChunkHash for JavascriptModulesChunkHashTap {
     chunk_ukey: &ChunkUkey,
     hasher: &mut RspackHash,
   ) -> rspack_error::Result<()> {
-    let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
     let result = self
       .function
-      .call_with_sync(JsChunk::from(chunk, compilation))
+      .call_with_sync(JsChunkWrapper::new(*chunk_ukey, compilation))
       .await?;
     result.hash(hasher);
     Ok(())
@@ -1770,6 +1826,139 @@ impl HtmlPluginAfterEmit for HtmlPluginAfterEmitTap {
     Ok(result.into())
   }
 
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RuntimePluginCreateScript for RuntimePluginCreateScriptTap {
+  async fn run(&self, mut data: CreateScriptData) -> rspack_error::Result<CreateScriptData> {
+    if let Some(code) = self
+      .function
+      .call_with_sync(JsCreateScriptData::from(data.clone()))
+      .await?
+    {
+      data.code = code;
+    }
+    Ok(data)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RuntimePluginLinkPreload for RuntimePluginLinkPreloadTap {
+  async fn run(&self, mut data: LinkPreloadData) -> rspack_error::Result<LinkPreloadData> {
+    if let Some(code) = self
+      .function
+      .call_with_sync(JsLinkPreloadData::from(data.clone()))
+      .await?
+    {
+      data.code = code;
+    }
+    Ok(data)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RuntimePluginLinkPrefetch for RuntimePluginLinkPrefetchTap {
+  async fn run(&self, mut data: LinkPrefetchData) -> rspack_error::Result<LinkPrefetchData> {
+    if let Some(code) = self
+      .function
+      .call_with_sync(JsLinkPrefetchData::from(data.clone()))
+      .await?
+    {
+      data.code = code;
+    }
+    Ok(data)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RsdoctorPluginModuleGraph for RsdoctorPluginModuleGraphTap {
+  async fn run(&self, data: &mut RsdoctorModuleGraph) -> rspack_error::Result<Option<bool>> {
+    let data = std::mem::take(data);
+    let bail = self
+      .function
+      .call_with_promise(JsRsdoctorModuleGraph::from(data))
+      .await?;
+    Ok(bail)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RsdoctorPluginChunkGraph for RsdoctorPluginChunkGraphTap {
+  async fn run(&self, data: &mut RsdoctorChunkGraph) -> rspack_error::Result<Option<bool>> {
+    let data = std::mem::take(data);
+    let bail = self
+      .function
+      .call_with_promise(JsRsdoctorChunkGraph::from(data))
+      .await?;
+    Ok(bail)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RsdoctorPluginModuleIds for RsdoctorPluginModuleIdsTap {
+  async fn run(&self, data: &mut RsdoctorModuleIdsPatch) -> rspack_error::Result<Option<bool>> {
+    let data = std::mem::take(data);
+    let bail = self
+      .function
+      .call_with_promise(JsRsdoctorModuleIdsPatch::from(data))
+      .await?;
+    Ok(bail)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RsdoctorPluginModuleSources for RsdoctorPluginModuleSourcesTap {
+  async fn run(&self, data: &mut RsdoctorModuleSourcesPatch) -> rspack_error::Result<Option<bool>> {
+    let data = std::mem::take(data);
+    let bail = self
+      .function
+      .call_with_promise(JsRsdoctorModuleSourcesPatch::from(data))
+      .await?;
+    Ok(bail)
+  }
+
+  fn stage(&self) -> i32 {
+    self.stage
+  }
+}
+
+#[async_trait]
+impl RsdoctorPluginAssets for RsdoctorPluginAssetsTap {
+  async fn run(&self, data: &mut RsdoctorAssetPatch) -> rspack_error::Result<Option<bool>> {
+    let data = std::mem::take(data);
+    let bail = self
+      .function
+      .call_with_promise(JsRsdoctorAssetPatch::from(data))
+      .await?;
+    Ok(bail)
+  }
   fn stage(&self) -> i32 {
     self.stage
   }

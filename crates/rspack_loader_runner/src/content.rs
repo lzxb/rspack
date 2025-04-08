@@ -6,7 +6,11 @@ use std::{
 
 use anymap::CloneAny;
 use once_cell::sync::OnceCell;
-use rspack_error::{Error, Result};
+use rspack_cacheable::{
+  cacheable,
+  with::{AsInner, AsOption, AsPreset, AsString},
+};
+use rspack_error::{Error, Result, ToStringResultToRspackResultExt};
 use rspack_paths::Utf8PathBuf;
 
 use crate::{get_scheme, Scheme};
@@ -21,7 +25,7 @@ impl Content {
   pub fn try_into_string(self) -> Result<String> {
     match self {
       Content::String(s) => Ok(s),
-      Content::Buffer(b) => String::from_utf8(b).map_err(|e| rspack_error::error!(e.to_string())),
+      Content::Buffer(b) => String::from_utf8(b).to_rspack_result(),
     }
   }
 
@@ -104,11 +108,13 @@ impl Debug for Content {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ResourceData {
   /// Resource with absolute path, query and fragment
   pub resource: String,
   /// Absolute resource path only
+  #[cacheable(with=AsOption<AsPreset>)]
   pub resource_path: Option<Utf8PathBuf>,
   /// Resource query with `?` prefix
   pub resource_query: Option<String>,
@@ -119,6 +125,7 @@ pub struct ResourceData {
   pub parameters: Option<String>,
   pub encoding: Option<String>,
   pub encoded_content: Option<String>,
+  #[cacheable(with=AsInner)]
   pub(crate) scheme: OnceCell<Scheme>,
 }
 
@@ -244,12 +251,15 @@ impl ResourceData {
 
 /// Used for [Rule.descriptionData](https://www.rspack.dev/config/module.html#ruledescriptiondata) and
 /// package.json.sideEffects in tree shaking.
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct DescriptionData {
   /// Path to package.json
+  #[cacheable(with=AsString)]
   path: PathBuf,
 
   /// Raw package.json
+  #[cacheable(with=AsInner<AsPreset>)]
   json: Arc<serde_json::Value>,
 }
 
@@ -264,6 +274,10 @@ impl DescriptionData {
 
   pub fn json(&self) -> &serde_json::Value {
     self.json.as_ref()
+  }
+
+  pub fn into_parts(self) -> (PathBuf, Arc<serde_json::Value>) {
+    (self.path, self.json)
   }
 }
 

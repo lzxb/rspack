@@ -1,15 +1,23 @@
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsPreset, AsVec},
+};
 use rspack_core::{
   AsContextDependency, AsDependencyTemplate, Dependency, DependencyCategory, DependencyId,
-  DependencyRange, DependencyType, ExtendedReferencedExport, ModuleDependency, RuntimeSpec,
+  DependencyRange, DependencyType, ExtendedReferencedExport, FactorizeInfo, ModuleDependency,
+  RuntimeSpec,
 };
 use rspack_util::atom::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct CssComposeDependency {
   id: DependencyId,
   request: String,
+  #[cacheable(with=AsVec<AsPreset>)]
   names: Vec<Atom>,
   range: DependencyRange,
+  factorize_info: FactorizeInfo,
 }
 
 impl CssComposeDependency {
@@ -19,10 +27,12 @@ impl CssComposeDependency {
       request,
       names,
       range,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for CssComposeDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -57,6 +67,7 @@ impl Dependency for CssComposeDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for CssComposeDependency {
   fn request(&self) -> &str {
     &self.request
@@ -68,6 +79,14 @@ impl ModuleDependency for CssComposeDependency {
 
   fn set_request(&mut self, request: String) {
     self.request = request;
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 

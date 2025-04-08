@@ -118,8 +118,8 @@ export type KnownStatsModule = {
 	cached: boolean;
 	optional?: boolean;
 	orphan?: boolean;
-	id?: string;
-	issuerId?: string;
+	id?: string | number | null;
+	issuerId?: string | number | null;
 	chunks?: string[];
 	assets?: string[];
 	dependent?: boolean;
@@ -153,7 +153,7 @@ export type StatsModule = KnownStatsModule & Record<string, any>;
 export type KnownStatsModuleIssuer = {
 	identifier?: string;
 	name?: string;
-	id?: string | number;
+	id?: string | number | null;
 	// profile?: StatsProfile;
 };
 
@@ -169,7 +169,7 @@ export type KnownStatsError = {
 	moduleName?: string;
 	loc?: string;
 	chunkId?: string | number;
-	moduleId?: string | number;
+	moduleId?: string | number | null;
 	moduleTrace?: StatsModuleTraceItem[];
 	details?: any;
 	stack?: string;
@@ -182,8 +182,16 @@ export type StatsModuleTraceItem = {
 	originName?: string;
 	moduleIdentifier?: string;
 	moduleName?: string;
-	originId?: string;
-	moduleId?: string;
+	originId?: string | number | null;
+	moduleId?: string | number | null;
+	dependencies?: StatsModuleTraceDependency[];
+};
+
+export type StatsModuleTraceDependency = KnownStatsModuleTraceDependency &
+	Record<string, any>;
+
+export type KnownStatsModuleTraceDependency = {
+	loc: string;
 };
 
 export type KnownStatsModuleReason = {
@@ -193,11 +201,11 @@ export type KnownStatsModuleReason = {
 	resolvedModuleIdentifier?: string;
 	resolvedModule?: string;
 	type?: string;
-	// active: boolean;
-	// explanation?: string;
+	active: boolean;
+	explanation?: string;
 	userRequest?: string;
-	// loc?: string;
-	moduleId?: string | null;
+	loc?: string;
+	moduleId?: string | number | null;
 	resolvedModuleId?: string | number | null;
 };
 
@@ -209,7 +217,7 @@ export type KnownStatsChunkOrigin = {
 	moduleName: string;
 	loc: string;
 	request: string;
-	moduleId?: string;
+	moduleId?: string | number | null;
 };
 
 export type StatsChunkOrigin = KnownStatsChunkOrigin & Record<string, any>;
@@ -314,6 +322,10 @@ export type SimpleExtractors = {
 	moduleTraceItem: ExtractorsByOption<
 		binding.JsStatsModuleTrace,
 		StatsModuleTraceItem
+	>;
+	moduleTraceDependency: ExtractorsByOption<
+		binding.JsStatsModuleTraceDependency,
+		StatsModuleTraceDependency
 	>;
 };
 

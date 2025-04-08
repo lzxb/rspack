@@ -1,8 +1,9 @@
 use rspack_collections::Identifiable;
 use rspack_core::{
-  to_identifier, ChunkUkey, Compilation, ExternalModule, ExternalRequest, LibraryOptions,
+  to_identifier, ChunkGraph, ChunkUkey, Compilation, ExternalModule, ExternalRequest,
+  LibraryOptions,
 };
-use rspack_error::{error, Result};
+use rspack_error::{Result, ToStringResultToRspackResultExt};
 
 pub fn externals_dep_array(modules: &[&ExternalModule]) -> Result<String> {
   let value = modules
@@ -17,7 +18,7 @@ pub fn externals_dep_array(modules: &[&ExternalModule]) -> Result<String> {
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-  serde_json::to_string(&value).map_err(|e| error!(e.to_string()))
+  serde_json::to_string(&value).to_rspack_result()
 }
 
 fn inner_external_arguments(modules: &[&ExternalModule], compilation: &Compilation) -> Vec<String> {
@@ -27,11 +28,9 @@ fn inner_external_arguments(modules: &[&ExternalModule], compilation: &Compilati
       format!(
         "__WEBPACK_EXTERNAL_MODULE_{}__",
         to_identifier(
-          compilation
-            .get_module_graph()
-            .module_graph_module_by_identifier(&m.identifier())
-            .expect("Module not found")
-            .id(&compilation.chunk_graph)
+          ChunkGraph::get_module_id(&compilation.module_ids_artifact, m.identifier())
+            .map(|s| s.as_str())
+            .expect("should have module id")
         )
       )
     })

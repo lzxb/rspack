@@ -1,12 +1,12 @@
 use hashlink::LinkedHashMap;
 
-use super::value_type::{GetValueType, ValueType};
 use super::{
-  Alias, AliasFields, ConditionNames, DescriptionFiles, EnforceExtension, ExportsFields,
-  ExtensionAlias, Extensions, Fallback, FullySpecified, ImportsFields, MainFields, MainFiles,
-  Modules, PreferAbsolute, PreferRelative, Restrictions, Roots, Symlink, TsconfigOptions,
+  value_type::{GetValueType, ValueType},
+  Alias, AliasFields, ByDependency, ConditionNames, DependencyCategoryStr, DescriptionFiles,
+  EnforceExtension, ExportsFields, ExtensionAlias, Extensions, Fallback, FullySpecified,
+  ImportsFields, MainFields, MainFiles, Modules, PreferAbsolute, PreferRelative, Resolve,
+  Restrictions, Roots, Symlink, TsconfigOptions,
 };
-use super::{ByDependency, DependencyCategoryStr, Resolve};
 
 pub(super) fn merge_resolve(first: Resolve, second: Resolve) -> Resolve {
   _merge_resolve(first, second)
@@ -70,6 +70,7 @@ struct ResolveWithEntry {
   alias_fields: Entry<AliasFields>,
   restrictions: Entry<Restrictions>,
   roots: Entry<Roots>,
+  pnp: Entry<bool>,
 }
 
 fn parse_resolve(resolve: Resolve) -> ResolveWithEntry {
@@ -102,6 +103,7 @@ fn parse_resolve(resolve: Resolve) -> ResolveWithEntry {
     alias_fields: entry!(alias_fields),
     restrictions: entry!(restrictions),
     roots: entry!(roots),
+    pnp: entry!(pnp),
   };
   let Some(by_dependency) = resolve.by_dependency else {
     return res;
@@ -156,10 +158,10 @@ fn parse_resolve(resolve: Resolve) -> ResolveWithEntry {
 
 fn overwrite<T, F>(a: Option<T>, b: Option<T>, f: F) -> Option<T>
 where
-  F: FnOnce(&T, T) -> T,
+  F: FnOnce(T, T) -> T,
 {
   match (a, b) {
-    (Some(a), Some(b)) => Some(f(&a, b)),
+    (Some(a), Some(b)) => Some(f(a, b)),
     (Some(a), None) => Some(a),
     (None, Some(b)) => Some(b),
     (None, None) => None,
@@ -261,11 +263,12 @@ fn _merge_resolve(first: Resolve, second: Resolve) -> Resolve {
   };
 
   let result_entry = ResolveWithEntry {
+    pnp: merge!(pnp, second.pnp.base.get_value_type(), |_| true, |_, b| b),
     extensions: merge!(
       extensions,
       second.extensions.base.get_value_type(),
       need_merge_base,
-      |a, b| normalize_string_array(a, b)
+      normalize_string_array
     ),
     prefer_relative: merge!(
       prefer_relative,
@@ -289,25 +292,25 @@ fn _merge_resolve(first: Resolve, second: Resolve) -> Resolve {
       main_files,
       second.main_files.base.get_value_type(),
       need_merge_base,
-      |a, b| normalize_string_array(a, b)
+      normalize_string_array
     ),
     main_fields: merge!(
       main_fields,
       second.main_fields.base.get_value_type(),
       need_merge_base,
-      |a, b| normalize_string_array(a, b)
+      normalize_string_array
     ),
     condition_names: merge!(
       condition_names,
       second.condition_names.base.get_value_type(),
       need_merge_base,
-      |a, b| normalize_string_array(a, b)
+      normalize_string_array
     ),
     modules: merge!(
       modules,
       second.modules.base.get_value_type(),
       need_merge_base,
-      |a, b| normalize_string_array(a, b)
+      normalize_string_array
     ),
     fully_specified: merge!(
       fully_specified,
@@ -315,15 +318,25 @@ fn _merge_resolve(first: Resolve, second: Resolve) -> Resolve {
       |_| true,
       |_, b| b
     ),
-    fallback: merge!(fallback, ValueType::Other, |_| false, extend_alias),
-    alias: merge!(alias, ValueType::Other, |_| false, extend_alias),
+    fallback: merge!(
+      fallback,
+      second.fallback.base.get_value_type(),
+      |_| false,
+      extend_alias
+    ),
+    alias: merge!(
+      alias,
+      second.alias.base.get_value_type(),
+      |_| false,
+      extend_alias
+    ),
     exports_fields: merge!(exports_fields, ValueType::Other, |_| false, |_, b| b),
     imports_fields: merge!(imports_fields, ValueType::Other, |_| false, |_, b| b),
     description_files: merge!(
       description_files,
       second.description_files.base.get_value_type(),
       need_merge_base,
-      |a, b| normalize_string_array(a, b)
+      normalize_string_array
     ),
     enforce_extension: merge!(
       enforce_extension,
@@ -436,13 +449,14 @@ fn _merge_resolve(first: Resolve, second: Resolve) -> Resolve {
     alias_fields: result_entry.alias_fields.base,
     restrictions: result_entry.restrictions.base,
     roots: result_entry.roots.base,
+    pnp: result_entry.pnp.base,
   }
 }
 
-fn normalize_string_array(a: &[String], b: Vec<String>) -> Vec<String> {
+fn normalize_string_array(a: Vec<String>, b: Vec<String>) -> Vec<String> {
   b.into_iter().fold(vec![], |mut acc, item| {
     if item.eq("...") {
-      acc.append(&mut a.to_vec());
+      acc.append(&mut a.clone());
     } else {
       acc.push(item);
     }
@@ -450,20 +464,31 @@ fn normalize_string_array(a: &[String], b: Vec<String>) -> Vec<String> {
   })
 }
 
-fn extend_alias(a: &Alias, b: Alias) -> Alias {
-  let mut b = b;
-  // FIXME: I think this clone can be removed
-  b.extend(a.clone());
-  b.dedup();
-  b
+fn extend_alias(a: Alias, b: Alias) -> Alias {
+  match (a, b) {
+    (Alias::MergeAlias(mut a), Alias::MergeAlias(b)) => {
+      for (key, value) in b {
+        if let Some((_, v)) = a.iter_mut().find(|(k, _)| *k == key) {
+          *v = value;
+        } else {
+          a.push((key, value));
+        }
+      }
+      Alias::MergeAlias(a)
+    }
+    (_, b) => b,
+  }
 }
 
-fn extend_extension_alias(a: &ExtensionAlias, b: ExtensionAlias) -> ExtensionAlias {
-  let mut b = b;
-  // FIXME: I think this clone can be removed
-  b.extend(a.clone());
-  b.dedup();
-  b
+fn extend_extension_alias(mut a: ExtensionAlias, b: ExtensionAlias) -> ExtensionAlias {
+  for (key, value) in b {
+    if let Some((_, v)) = a.iter_mut().find(|(k, _)| *k == key) {
+      *v = value;
+    } else {
+      a.push((key, value));
+    }
+  }
+  a
 }
 
 #[cfg(test)]
@@ -601,7 +626,7 @@ mod test {
   fn test_merge_resolver_options_0() {
     let base = Resolve {
       extensions: string_list(&["a", "b"]),
-      alias: Some(vec![("c".to_string(), vec![AliasMap::Ignore])]),
+      alias: Some(vec![("c".to_string(), vec![AliasMap::Ignore])].into()),
       symlinks: Some(false),
       main_files: string_list(&["d", "e", "f"]),
       main_fields: string_list(&["g", "h", "i"]),
@@ -610,7 +635,7 @@ mod test {
     };
     let another = Resolve {
       extensions: string_list(&["a1", "b1"]),
-      alias: Some(vec![("c2".to_string(), vec![AliasMap::Ignore])]),
+      alias: Some(vec![("c2".to_string(), vec![AliasMap::Ignore])].into()),
       prefer_relative: Some(true),
       main_files: string_list(&["d1", "e", "..."]),
       main_fields: string_list(&["...", "h", "..."]),
@@ -632,9 +657,10 @@ mod test {
     assert_eq!(
       options.alias.expect("should be Ok"),
       vec![
-        ("c2".to_string(), vec![AliasMap::Ignore]),
-        ("c".to_string(), vec![AliasMap::Ignore])
+        ("c".to_string(), vec![AliasMap::Ignore]),
+        ("c2".to_string(), vec![AliasMap::Ignore])
       ]
+      .into()
     );
     assert_eq!(options.condition_names.expect("should be Ok").len(), 3);
   }
@@ -683,13 +709,13 @@ mod test {
     let first = Resolve {
       extensions: string_list(&["1"]),
       modules: string_list(&["1"]),
-      alias: Some(vec![]),
+      alias: Some(vec![].into()),
       ..Default::default()
     };
     let second = Resolve {
       extensions: string_list(&["2"]),
       modules: string_list(&["2", "...", "3"]),
-      alias: Some(vec![("2".to_string(), vec![AliasMap::Ignore])]),
+      alias: Some(vec![("2".to_string(), vec![AliasMap::Ignore])].into()),
       ..Default::default()
     };
     pretty_assertions::assert_eq!(
@@ -697,7 +723,7 @@ mod test {
       Resolve {
         extensions: string_list(&["2"]),
         modules: string_list(&["2", "1", "3"]),
-        alias: Some(vec![("2".to_string(), vec![AliasMap::Ignore])]),
+        alias: Some(vec![("2".to_string(), vec![AliasMap::Ignore])].into()),
         ..Default::default()
       }
     )
@@ -2268,6 +2294,25 @@ mod test {
       merge_resolve(first, second),
       Resolve {
         extensions: string_list(&[]),
+        ..Default::default()
+      }
+    )
+  }
+
+  #[test]
+  fn merge_resolver_options_false_alias() {
+    let first = Resolve {
+      alias: Some(vec![("2".to_string(), vec![AliasMap::Ignore])].into()),
+      ..Default::default()
+    };
+    let second = Resolve {
+      alias: Some(Alias::OverwriteToNoAlias),
+      ..Default::default()
+    };
+    pretty_assertions::assert_eq!(
+      merge_resolve(first, second),
+      Resolve {
+        alias: Some(Alias::OverwriteToNoAlias),
         ..Default::default()
       }
     )

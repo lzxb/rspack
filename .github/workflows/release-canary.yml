@@ -7,10 +7,26 @@ on:
         required: true
         type: string
         description: "Commit SHA"
+      test:
+        required: false
+        type: boolean
+        default: false
+        description: "Run tests"
+      profile:
+        required: true
+        type: choice
+        default: release
+        options:
+          - release
+          - profiling
+          - ci
+        description: "profiling means release with debug info for profiling, ci means release with debug info and faster build time"
 
 permissions:
   # To publish packages with provenance
   id-token: write
+  # Allow commenting on issues for `reusable-build.yml`
+  issues: write
 
 jobs:
   get-runner-labels:
@@ -49,7 +65,8 @@ jobs:
       ref: ${{inputs.commit}}
       target: ${{ matrix.array.target }}
       runner: ${{ matrix.array.runner }}
-      test: false
+      profile: ${{inputs.profile}}
+      test: ${{inputs.test}}
 
   release:
     name: Release Canary
@@ -57,13 +74,16 @@ jobs:
     needs: build
     steps:
       - name: Checkout Branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           fetch-depth: 1
           ref: ${{inputs.commit}}
 
-      - name: Pnpm Cache
-        uses: ./.github/actions/pnpm-cache
+      - name: Pnpm Setup
+        uses: ./.github/actions/pnpm/setup
+
+      - name: Pnpm Install
+        uses: ./.github/actions/pnpm/install-dependencies
 
       - name: Download artifacts
         uses: actions/download-artifact@v4.1.7
@@ -87,5 +107,4 @@ jobs:
           ./x version snapshot
           ./x publish snapshot --tag canary
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.RSPACK_CANARY_RELEASE_TOKEN }}

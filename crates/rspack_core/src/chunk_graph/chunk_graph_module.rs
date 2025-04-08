@@ -1,23 +1,80 @@
 //!  There are methods whose verb is `ChunkGraphModule`
 
-use std::hash::{Hash, Hasher};
+use std::{
+  fmt,
+  hash::{Hash, Hasher},
+  sync::Arc,
+};
 
 use rspack_collections::{IdentifierSet, UkeySet};
 use rspack_hash::RspackHashDigest;
+use rspack_macros::cacheable;
 use rspack_util::ext::DynHash;
 use rustc_hash::FxHasher;
+use serde::{Serialize, Serializer};
 use tracing::instrument;
 
 use crate::{
-  AsyncDependenciesBlockIdentifier, ChunkByUkey, ChunkGroup, ChunkGroupByUkey, ChunkGroupUkey,
-  ChunkUkey, Compilation, ModuleGraph, ModuleIdentifier, RuntimeGlobals, RuntimeSpec,
-  RuntimeSpecMap, RuntimeSpecSet,
+  for_each_runtime, AsyncDependenciesBlockIdentifier, ChunkByUkey, ChunkGraph, ChunkGroup,
+  ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Compilation, Module, ModuleGraph, ModuleIdentifier,
+  ModuleIdsArtifact, RuntimeGlobals, RuntimeSpec, RuntimeSpecMap, RuntimeSpecSet,
 };
-use crate::{ChunkGraph, Module};
+
+#[cacheable]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModuleId {
+  inner: Arc<str>,
+}
+
+impl From<String> for ModuleId {
+  fn from(s: String) -> Self {
+    Self { inner: s.into() }
+  }
+}
+
+impl From<&str> for ModuleId {
+  fn from(s: &str) -> Self {
+    Self { inner: s.into() }
+  }
+}
+
+impl From<u32> for ModuleId {
+  fn from(n: u32) -> Self {
+    Self::from(n.to_string())
+  }
+}
+
+impl fmt::Display for ModuleId {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
+impl Serialize for ModuleId {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    if let Some(n) = self.as_number() {
+      serializer.serialize_u32(n)
+    } else {
+      serializer.serialize_str(self.as_str())
+    }
+  }
+}
+
+impl ModuleId {
+  pub fn as_number(&self) -> Option<u32> {
+    self.inner.parse::<u32>().ok()
+  }
+
+  pub fn as_str(&self) -> &str {
+    &self.inner
+  }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ChunkGraphModule {
-  pub id: Option<String>,
   pub(super) entry_in_chunks: UkeySet<ChunkUkey>,
   pub chunks: UkeySet<ChunkUkey>,
   pub(super) runtime_in_chunks: UkeySet<ChunkUkey>,
@@ -26,7 +83,6 @@ pub struct ChunkGraphModule {
 impl ChunkGraphModule {
   pub fn new() -> Self {
     Self {
-      id: None,
       entry_in_chunks: Default::default(),
       chunks: Default::default(),
       runtime_in_chunks: Default::default(),
@@ -78,7 +134,7 @@ impl ChunkGraph {
     self
       .chunk_graph_module_by_module_identifier
       .get_mut(&module_identifier)
-      .unwrap_or_else(|| panic!("Module({}) should be added before using", module_identifier))
+      .unwrap_or_else(|| panic!("Module({module_identifier}) should be added before using"))
   }
 
   pub(crate) fn expect_chunk_graph_module(
@@ -88,7 +144,7 @@ impl ChunkGraph {
     self
       .chunk_graph_module_by_module_identifier
       .get(&module_identifier)
-      .unwrap_or_else(|| panic!("Module({}) should be added before using", module_identifier))
+      .unwrap_or_else(|| panic!("Module({module_identifier}) should be added before using"))
   }
 
   pub(crate) fn get_chunk_graph_module_mut(
@@ -104,7 +160,7 @@ impl ChunkGraph {
     let chunk_graph_module = self
       .chunk_graph_module_by_module_identifier
       .get(&module_identifier)
-      .unwrap_or_else(|| panic!("Module({}) should be added before using", module_identifier));
+      .unwrap_or_else(|| panic!("Module({module_identifier}) should be added before using"));
     &chunk_graph_module.chunks
   }
 
@@ -119,7 +175,7 @@ impl ChunkGraph {
     map: RuntimeSpecMap<RuntimeGlobals>,
   ) {
     compilation
-      .cgm_runtime_requirements_results
+      .cgm_runtime_requirements_artifact
       .set_runtime_requirements(module_identifier, map);
   }
 
@@ -129,7 +185,7 @@ impl ChunkGraph {
     runtime: &RuntimeSpec,
   ) -> Option<&'c RuntimeGlobals> {
     compilation
-      .cgm_runtime_requirements_results
+      .cgm_runtime_requirements_artifact
       .get(&module_identifier, runtime)
   }
 
@@ -147,14 +203,35 @@ impl ChunkGraph {
     runtimes
   }
 
-  pub fn get_module_id(&self, module_identifier: ModuleIdentifier) -> Option<&str> {
+  pub fn get_module_runtimes_iter<'a>(
+    &self,
+    module_identifier: ModuleIdentifier,
+    chunk_by_ukey: &'a ChunkByUkey,
+  ) -> impl Iterator<Item = &'a RuntimeSpec> + use<'a, '_> {
     let cgm = self.expect_chunk_graph_module(module_identifier);
-    cgm.id.as_deref()
+    cgm.chunks.iter().map(|chunk_ukey| {
+      let chunk = chunk_by_ukey.expect_get(chunk_ukey);
+      chunk.runtime()
+    })
   }
 
-  pub fn set_module_id(&mut self, module_identifier: ModuleIdentifier, id: String) {
-    let cgm = self.expect_chunk_graph_module_mut(module_identifier);
-    cgm.id = Some(id);
+  pub fn get_module_id(
+    module_ids: &ModuleIdsArtifact,
+    module_identifier: ModuleIdentifier,
+  ) -> Option<&ModuleId> {
+    module_ids.get(&module_identifier)
+  }
+
+  pub fn set_module_id(
+    module_ids: &mut ModuleIdsArtifact,
+    module_identifier: ModuleIdentifier,
+    id: ModuleId,
+  ) -> bool {
+    if let Some(old_id) = module_ids.insert(module_identifier, id.clone()) {
+      old_id != id
+    } else {
+      true
+    }
   }
 
   pub fn get_block_chunk_group<'a>(
@@ -182,7 +259,7 @@ impl ChunkGraph {
     runtime: &RuntimeSpec,
   ) -> Option<&'c RspackHashDigest> {
     compilation
-      .cgm_hash_results
+      .cgm_hash_artifact
       .get(&module_identifier, runtime)
   }
 
@@ -190,13 +267,23 @@ impl ChunkGraph {
     compilation: &mut Compilation,
     module_identifier: ModuleIdentifier,
     hashes: RuntimeSpecMap<RspackHashDigest>,
-  ) {
+  ) -> bool {
     compilation
-      .cgm_hash_results
-      .set_hashes(module_identifier, hashes);
+      .cgm_hash_artifact
+      .set_hashes(module_identifier, hashes)
   }
 
-  #[instrument(name = "chunk_graph:get_module_graph_hash", skip_all, fields(module = ?module.identifier()))]
+  pub fn try_get_module_chunks(
+    &self,
+    module_identifier: &ModuleIdentifier,
+  ) -> Option<&UkeySet<ChunkUkey>> {
+    self
+      .chunk_graph_module_by_module_identifier
+      .get(module_identifier)
+      .map(|cgm| &cgm.chunks)
+  }
+
+  #[instrument("chunk_graph:get_module_graph_hash", skip_all, fields(module = ?module.identifier()))]
   pub fn get_module_graph_hash(
     &self,
     module: &dyn Module,
@@ -209,29 +296,38 @@ impl ChunkGraph {
       .hash(&mut hasher);
     let strict = module.get_strict_esm_module();
     let mg = compilation.get_module_graph();
-    let connections = mg
-      .get_outgoing_connections(&module.identifier())
-      .into_iter()
-      .collect::<Vec<_>>();
-    if !connections.is_empty() {
-      let mut visited_modules = IdentifierSet::default();
-      visited_modules.insert(module.identifier());
-      for connection in connections {
-        let module_identifier = connection.module_identifier();
-        if visited_modules.contains(module_identifier) {
-          continue;
-        }
-        if connection.active_state(&mg, runtime).is_false() {
-          continue;
-        }
-        visited_modules.insert(*module_identifier);
-        let module = mg
-          .module_by_identifier(module_identifier)
-          .expect("should have module")
-          .as_ref();
-        module.get_exports_type(&mg, strict).hash(&mut hasher);
-        self.get_module_graph_hash_without_connections(module, compilation, runtime);
+    let mut visited_modules = IdentifierSet::default();
+    visited_modules.insert(module.identifier());
+    for connection in mg
+      .get_outgoing_connections_in_order(&module.identifier())
+      .filter_map(|c| mg.connection_by_dependency_id(c))
+    {
+      let module_identifier = connection.module_identifier();
+      if visited_modules.contains(module_identifier) {
+        continue;
       }
+      let active_state = connection.active_state(&mg, runtime);
+      if active_state.is_false() {
+        continue;
+      }
+      visited_modules.insert(*module_identifier);
+      for_each_runtime(
+        runtime,
+        |runtime| {
+          let runtime = runtime.map(|r| RuntimeSpec::from_iter([r.as_str().into()]));
+          let active_state = connection.active_state(&mg, runtime.as_ref());
+          active_state.hash(&mut hasher);
+        },
+        true,
+      );
+      let module = mg
+        .module_by_identifier(module_identifier)
+        .expect("should have module")
+        .as_ref();
+      module.get_exports_type(&mg, strict).hash(&mut hasher);
+      self
+        .get_module_graph_hash_without_connections(module, compilation, runtime)
+        .hash(&mut hasher);
     }
     hasher.finish()
   }
@@ -245,8 +341,7 @@ impl ChunkGraph {
     let mut hasher = FxHasher::default();
     let mg = compilation.get_module_graph();
     let module_identifier = module.identifier();
-    let cgm = self.expect_chunk_graph_module(module_identifier);
-    cgm.id.as_ref().dyn_hash(&mut hasher);
+    Self::get_module_id(&compilation.module_ids_artifact, module_identifier).dyn_hash(&mut hasher);
     module.source_types().dyn_hash(&mut hasher);
     ModuleGraph::is_async(compilation, &module_identifier).dyn_hash(&mut hasher);
     mg.get_exports_info(&module_identifier)

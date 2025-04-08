@@ -36,7 +36,6 @@ import inspector from "node:inspector";
 import path from "node:path";
 import { URLSearchParams } from "node:url";
 import { type Compiler, type RspackOptions, rspack } from "@rspack/core";
-import { dynamicImport } from "./crossImport";
 
 type JSCPUProfileOptionsOutput = string;
 type JSCPUProfileOptions = {
@@ -76,7 +75,7 @@ const defaultRustTraceChromeOutput = path.join(
 	"./trace.json"
 );
 const defaultRustTraceLoggerOutput = "stdout";
-const defaultRustTraceFilter = "trace";
+const defaultRustTraceFilter = "info";
 const defaultRustTraceLayer = "chrome";
 const defaultLoggingOutput = path.join(defaultOutputDirname, "./logging.json");
 
@@ -123,6 +122,11 @@ function resolveJSCPUProfileOptions(value: string): JSCPUProfileOptions {
 	return { output: value || defaultJSCPUProfileOutput };
 }
 
+function isSupportedLayer(layer: string): layer is RustTraceOptionsLayer {
+	const SUPPORTED_LAYERS = ["chrome", "logger", "otel"];
+	return SUPPORTED_LAYERS.includes(layer);
+}
+
 // TRACE=value
 function resolveRustTraceOptions(value: string): RustTraceOptions {
 	// filter=trace&output=stdout&layer=logger
@@ -134,7 +138,8 @@ function resolveRustTraceOptions(value: string): RustTraceOptions {
 			layer === "chrome"
 				? parsed.get("output") || defaultRustTraceChromeOutput
 				: parsed.get("output") || defaultRustTraceLoggerOutput;
-		if (layer !== "chrome" && layer !== "logger" && layer !== "console") {
+
+		if (!isSupportedLayer(layer)) {
 			throw new Error(
 				`${layer} is not a valid layer, should be chrome or logger`
 			);
@@ -210,19 +215,21 @@ class RspackProfileLoggingPlugin {
 }
 
 export async function applyProfile(profileValue: string, item: RspackOptions) {
-	const { default: exitHook } = await dynamicImport("exit-hook");
+	const { asyncExitHook } = await import("exit-hook");
 	const entries = Object.entries(resolveProfile(profileValue));
 	if (entries.length <= 0) return;
 	await fs.promises.mkdir(defaultOutputDirname);
 	for (const [kind, value] of entries) {
 		await ensureFileDir(value.output);
 		if (kind === "TRACE" && "filter" in value) {
-			rspack.experiments.globalTrace.register(
+			await rspack.experiments.globalTrace.register(
 				value.filter,
 				value.layer,
 				value.output
 			);
-			exitHook(rspack.experiments.globalTrace.cleanup);
+			asyncExitHook(rspack.experiments.globalTrace.cleanup, {
+				wait: 500
+			});
 		} else if (kind === "JSCPU") {
 			(item.plugins ??= []).push(
 				new RspackProfileJSCPUProfilePlugin(value.output)

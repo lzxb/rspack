@@ -1,7 +1,11 @@
 use bitflags::bitflags;
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsOption, AsPreset},
+};
 use rspack_core::{
-  AffectType, AsContextDependency, AsModuleDependency, Compilation, Dependency, DependencyCategory,
-  DependencyId, DependencyTemplate, DependencyType, RuntimeGlobals, RuntimeSpec, TemplateContext,
+  AffectType, AsContextDependency, AsModuleDependency, Dependency, DependencyCategory,
+  DependencyId, DependencyTemplate, DependencyType, RuntimeGlobals, TemplateContext,
   TemplateReplaceSource,
 };
 use rspack_util::{atom::Atom, json_stringify};
@@ -158,18 +162,20 @@ impl Branch {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
-pub struct AmdDefineDependency {
+pub struct AMDDefineDependency {
   id: DependencyId,
   range: (u32, u32),
   array_range: Option<(u32, u32)>,
   function_range: Option<(u32, u32)>,
   object_range: Option<(u32, u32)>,
+  #[cacheable(with=AsOption<AsPreset>)]
   named_module: Option<Atom>,
   local_module: Option<LocalModule>,
 }
 
-impl AmdDefineDependency {
+impl AMDDefineDependency {
   pub fn new(
     range: (u32, u32),
     array_range: Option<(u32, u32)>,
@@ -194,7 +200,8 @@ impl AmdDefineDependency {
   }
 }
 
-impl Dependency for AmdDefineDependency {
+#[cacheable_dyn]
+impl Dependency for AMDDefineDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
@@ -212,7 +219,7 @@ impl Dependency for AmdDefineDependency {
   }
 }
 
-impl AmdDefineDependency {
+impl AMDDefineDependency {
   fn local_module_var(&self) -> Option<String> {
     self.local_module.as_ref().and_then(|m| {
       if m.is_used() {
@@ -241,7 +248,8 @@ impl AmdDefineDependency {
   }
 }
 
-impl DependencyTemplate for AmdDefineDependency {
+#[cacheable_dyn]
+impl DependencyTemplate for AMDDefineDependency {
   fn apply(
     &self,
     source: &mut TemplateReplaceSource,
@@ -283,20 +291,8 @@ impl DependencyTemplate for AmdDefineDependency {
       panic!("Implementation error");
     }
   }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
-  }
 }
 
-impl AsModuleDependency for AmdDefineDependency {}
+impl AsModuleDependency for AMDDefineDependency {}
 
-impl AsContextDependency for AmdDefineDependency {}
+impl AsContextDependency for AMDDefineDependency {}

@@ -1,12 +1,17 @@
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsPreset, AsVec},
+};
 use rspack_core::{
-  property_access, AsContextDependency, AsModuleDependency, Compilation, Dependency,
-  DependencyCategory, DependencyId, DependencyTemplate, DependencyType, ExportNameOrSpec,
-  ExportSpec, ExportsOfExportsSpec, ExportsSpec, InitFragmentExt, InitFragmentKey,
-  InitFragmentStage, ModuleGraph, NormalInitFragment, RuntimeGlobals, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource, UsedName,
+  property_access, AsContextDependency, AsModuleDependency, Dependency, DependencyCategory,
+  DependencyId, DependencyTemplate, DependencyType, ExportNameOrSpec, ExportSpec,
+  ExportsOfExportsSpec, ExportsSpec, InitFragmentExt, InitFragmentKey, InitFragmentStage,
+  ModuleGraph, NormalInitFragment, RuntimeGlobals, TemplateContext, TemplateReplaceSource,
+  UsedName,
 };
 use swc_core::atoms::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone, Copy)]
 pub enum ExportsBase {
   Exports,
@@ -45,12 +50,14 @@ impl ExportsBase {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct CommonJsExportsDependency {
   id: DependencyId,
   range: (u32, u32),
   value_range: Option<(u32, u32)>,
   base: ExportsBase,
+  #[cacheable(with=AsVec<AsPreset>)]
   names: Vec<Atom>,
 }
 
@@ -71,6 +78,7 @@ impl CommonJsExportsDependency {
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for CommonJsExportsDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -103,6 +111,7 @@ impl Dependency for CommonJsExportsDependency {
 
 impl AsModuleDependency for CommonJsExportsDependency {}
 
+#[cacheable_dyn]
 impl DependencyTemplate for CommonJsExportsDependency {
   fn apply(
     &self,
@@ -224,18 +233,6 @@ impl DependencyTemplate for CommonJsExportsDependency {
     } else {
       panic!("Unexpected base type");
     }
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

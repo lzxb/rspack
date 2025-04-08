@@ -1,30 +1,25 @@
 use std::hash::Hash;
-use std::path::PathBuf;
-use std::sync::LazyLock;
 
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
-use rspack_core::rspack_sources::Source;
 use rspack_core::{
-  impl_module_meta_info, impl_source_map_config, module_update_hash,
+  impl_module_meta_info, impl_source_map_config, module_update_hash, rspack_sources::BoxSource,
   AsyncDependenciesBlockIdentifier, BuildContext, BuildInfo, BuildMeta, BuildResult,
   CodeGenerationResult, Compilation, CompilerOptions, ConcatenationScope, DependenciesBlock,
-  DependencyId, DependencyType, FactoryMeta, Module, ModuleFactory, ModuleFactoryCreateData,
-  ModuleFactoryResult, RuntimeSpec, SourceType,
+  DependencyId, FactoryMeta, Module, ModuleFactory, ModuleFactoryCreateData, ModuleFactoryResult,
+  RuntimeSpec, SourceType,
 };
-use rspack_error::Result;
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
 use rspack_hash::{RspackHash, RspackHashDigest};
-use rspack_util::ext::DynHash;
-use rspack_util::itoa;
-use rustc_hash::FxHashSet;
+use rspack_util::{ext::DynHash, itoa};
 
-use crate::css_dependency::CssDependency;
-use crate::plugin::{MODULE_TYPE, SOURCE_TYPE};
-
-pub(crate) static DEPENDENCY_TYPE: LazyLock<DependencyType> =
-  LazyLock::new(|| DependencyType::Custom("mini-extract-dep"));
+use crate::{
+  css_dependency::CssDependency,
+  plugin::{MODULE_TYPE, SOURCE_TYPE},
+};
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug)]
 pub(crate) struct CssModule {
   pub(crate) identifier: String,
@@ -37,18 +32,13 @@ pub(crate) struct CssModule {
   pub(crate) identifier_index: u32,
 
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
 
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
   dependencies: Vec<DependencyId>,
 
   identifier__: Identifier,
-  cacheable: bool,
-  file_dependencies: FxHashSet<PathBuf>,
-  context_dependencies: FxHashSet<PathBuf>,
-  missing_dependencies: FxHashSet<PathBuf>,
-  build_dependencies: FxHashSet<PathBuf>,
 }
 
 impl CssModule {
@@ -75,15 +65,18 @@ impl CssModule {
       blocks: vec![],
       dependencies: vec![],
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: BuildInfo {
+        cacheable: dep.cacheable,
+        strict: true,
+        file_dependencies: dep.file_dependencies,
+        context_dependencies: dep.context_dependencies,
+        missing_dependencies: dep.missing_dependencies,
+        build_dependencies: dep.build_dependencies,
+        ..Default::default()
+      },
+      build_meta: Default::default(),
       source_map_kind: rspack_util::source_map::SourceMapKind::empty(),
       identifier__,
-      cacheable: dep.cacheable,
-      file_dependencies: dep.file_dependencies,
-      context_dependencies: dep.context_dependencies,
-      missing_dependencies: dep.missing_dependencies,
-      build_dependencies: dep.build_dependencies,
     }
   }
 
@@ -102,6 +95,7 @@ impl CssModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait::async_trait]
 impl Module for CssModule {
   impl_module_meta_info!();
@@ -141,7 +135,7 @@ impl Module for CssModule {
     self
       .identifier
       .split('!')
-      .last()
+      .next_back()
       .map(|resource| resource.split('?').next().unwrap_or(resource).into())
   }
 
@@ -149,7 +143,7 @@ impl Module for CssModule {
     self.content.len() as f64
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -170,23 +164,12 @@ impl Module for CssModule {
     build_context: BuildContext,
     _compilation: Option<&Compilation>,
   ) -> Result<BuildResult> {
-    Ok(BuildResult {
-      build_info: BuildInfo {
-        hash: Some(self.compute_hash(&build_context.compiler_options)),
-        cacheable: self.cacheable,
-        strict: true,
-        file_dependencies: self.file_dependencies.clone(),
-        context_dependencies: self.context_dependencies.clone(),
-        missing_dependencies: self.missing_dependencies.clone(),
-        build_dependencies: self.build_dependencies.clone(),
-        ..Default::default()
-      },
-      ..Default::default()
-    })
+    self.build_info.hash = Some(self.compute_hash(&build_context.compiler_options));
+    Ok(Default::default())
   }
 
-  #[tracing::instrument(name = "ExtractCssModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("ExtractCssModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     _compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -195,24 +178,15 @@ impl Module for CssModule {
     Ok(CodeGenerationResult::default())
   }
 
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    module_update_hash(self, hasher, compilation, runtime);
-    self
-      .build_info
-      .as_ref()
-      .expect("should update_hash after build")
-      .hash
-      .dyn_hash(hasher);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    self.build_info.hash.dyn_hash(&mut hasher);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

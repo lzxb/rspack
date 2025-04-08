@@ -12,7 +12,7 @@ import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 
-import { ASSET_MODULE_TYPE } from "../ModuleTypeConstants";
+import { ASSET_MODULE_TYPE, JSON_MODULE_TYPE } from "../ModuleTypeConstants";
 import { Template } from "../Template";
 import {
 	LightningCssMinimizerRspackPlugin,
@@ -38,6 +38,7 @@ import type {
 	ExternalsPresets,
 	InfrastructureLogging,
 	JavascriptParserOptions,
+	JsonGeneratorOptions,
 	Library,
 	Loader,
 	Mode,
@@ -88,14 +89,22 @@ export const applyRspackOptionsDefaults = (
 	// but Rspack currently does not support this option
 	F(options, "cache", () => development);
 
-	applyExperimentsDefaults(options.experiments, { production });
+	applyExperimentsDefaults(options.experiments, {
+		production,
+		development
+	});
+
+	if (options.cache === false) {
+		options.experiments.cache = false;
+	}
 
 	applySnapshotDefaults(options.snapshot, { production });
 
 	applyModuleDefaults(options.module, {
 		asyncWebAssembly: options.experiments.asyncWebAssembly!,
 		css: options.experiments.css,
-		targetProperties
+		targetProperties,
+		mode: options.mode
 	});
 
 	applyOutputDefaults(options.output, {
@@ -118,7 +127,8 @@ export const applyRspackOptionsDefaults = (
 	);
 
 	applyExternalsPresetsDefaults(options.externalsPresets, {
-		targetProperties
+		targetProperties,
+		buildHttp: Boolean(options.experiments.buildHttp)
 	});
 
 	F(options, "externalsType", () => {
@@ -194,10 +204,10 @@ const applyInfrastructureLoggingDefaults = (
 
 const applyExperimentsDefaults = (
 	experiments: ExperimentsNormalized,
-	{ production }: { production: boolean }
+	{ production, development }: { production: boolean; development: boolean }
 ) => {
 	// IGNORE(experiments.cache): In webpack, cache is undefined by default
-	F(experiments, "cache", () => !production);
+	F(experiments, "cache", () => development);
 
 	D(experiments, "futureDefaults", false);
 	// IGNORE(experiments.lazyCompilation): In webpack, lazyCompilation is undefined by default
@@ -207,6 +217,12 @@ const applyExperimentsDefaults = (
 	D(experiments, "layers", false);
 	D(experiments, "topLevelAwait", true);
 
+	D(experiments, "buildHttp", undefined);
+	if (experiments.buildHttp && typeof experiments.buildHttp === "object") {
+		D(experiments.buildHttp, "upgrade", false);
+		// D(experiments.buildHttp, "frozen", false);
+	}
+
 	// IGNORE(experiments.incremental): Rspack specific configuration for incremental
 	D(experiments, "incremental", !production ? {} : false);
 	if (typeof experiments.incremental === "object") {
@@ -214,7 +230,10 @@ const applyExperimentsDefaults = (
 		D(experiments.incremental, "inferAsyncModules", false);
 		D(experiments.incremental, "providedExports", false);
 		D(experiments.incremental, "dependenciesDiagnostics", false);
+		D(experiments.incremental, "sideEffects", false);
 		D(experiments.incremental, "buildChunkGraph", false);
+		D(experiments.incremental, "moduleIds", false);
+		D(experiments.incremental, "chunkIds", false);
 		D(experiments.incremental, "modulesHashes", false);
 		D(experiments.incremental, "modulesCodegen", false);
 		D(experiments.incremental, "modulesRuntimeRequirements", false);
@@ -226,6 +245,12 @@ const applyExperimentsDefaults = (
 	// IGNORE(experiments.rspackFuture): Rspack specific configuration
 	D(experiments, "rspackFuture", {});
 	// rspackFuture.bundlerInfo default value is applied after applyDefaults
+
+	// IGNORE(experiments.parallelCodeSplitting): Rspack specific configuration for new code splitting algorithm
+	D(experiments, "parallelCodeSplitting", true);
+
+	// IGNORE(experiments.parallelLoader): Rspack specific configuration for parallel loader execution
+	D(experiments, "parallelLoader", false);
 };
 
 const applybundlerInfoDefaults = (
@@ -271,16 +296,24 @@ const applyJavascriptParserOptionsDefaults = (
 	D(parserOptions, "importMeta", true);
 };
 
+const applyJsonGeneratorOptionsDefaults = (
+	generatorOptions: JsonGeneratorOptions
+) => {
+	D(generatorOptions, "JSONParse", true);
+};
+
 const applyModuleDefaults = (
 	module: ModuleOptions,
 	{
 		asyncWebAssembly,
 		css,
-		targetProperties
+		targetProperties,
+		mode
 	}: {
 		asyncWebAssembly: boolean;
 		css?: boolean;
 		targetProperties: any;
+		mode?: Mode;
 	}
 ) => {
 	assertNotNill(module.parser);
@@ -297,6 +330,18 @@ const applyModuleDefaults = (
 	F(module.parser, "javascript", () => ({}));
 	assertNotNill(module.parser.javascript);
 	applyJavascriptParserOptionsDefaults(module.parser.javascript);
+
+	F(module.parser, JSON_MODULE_TYPE, () => ({}));
+	assertNotNill(module.parser[JSON_MODULE_TYPE]);
+	D(
+		module.parser[JSON_MODULE_TYPE],
+		"exportsDepth",
+		mode === "development" ? 1 : Number.MAX_SAFE_INTEGER
+	);
+
+	F(module.generator, "json", () => ({}));
+	assertNotNill(module.generator.json);
+	applyJsonGeneratorOptionsDefaults(module.generator.json);
 
 	if (css) {
 		F(module.parser, "css", () => ({}));
@@ -586,7 +631,6 @@ const applyOutputDefaults = (
 	const uniqueNameId = Template.toIdentifier(output.uniqueName);
 	F(output, "hotUpdateGlobal", () => `webpackHotUpdate${uniqueNameId}`);
 	F(output, "chunkLoadingGlobal", () => `webpackChunk${uniqueNameId}`);
-	D(output, "cssHeadDataCompression", !development);
 	D(output, "assetModuleFilename", "[hash][ext][query]");
 	D(output, "webassemblyModuleFilename", "[hash].module.wasm");
 	D(output, "compareBeforeEmit", true);
@@ -685,8 +729,7 @@ const applyOutputDefaults = (
 	F(output, "wasmLoading", () => {
 		if (tp) {
 			if (tp.fetchWasm) return "fetch";
-			if (tp.nodeBuiltins)
-				return output.module ? "async-node-module" : "async-node";
+			if (tp.nodeBuiltins) return "async-node";
 			if (tp.nodeBuiltins === null || tp.fetchWasm === null) {
 				return "universal";
 			}
@@ -709,7 +752,7 @@ const applyOutputDefaults = (
 	D(output, "workerPublicPath", "");
 	D(output, "sourceMapFilename", "[file].map[query]");
 	F(output, "scriptType", () => (output.module ? "module" : false));
-	D(output, "charset", true);
+	D(output, "charset", !futureDefaults);
 	D(output, "chunkLoadTimeout", 120000);
 
 	const { trustedTypes } = output;
@@ -720,6 +763,7 @@ const applyOutputDefaults = (
 			() =>
 				output.uniqueName!.replace(/[^a-zA-Z0-9\-#=_/@.%]+/g, "_") || "webpack"
 		);
+		D(trustedTypes, "onPolicyCreationFailure", "stop");
 	}
 
 	const forEachEntry = (fn: (desc: EntryDescriptionNormalized) => void) => {
@@ -810,9 +854,9 @@ const applyOutputDefaults = (
 
 const applyExternalsPresetsDefaults = (
 	externalsPresets: ExternalsPresets,
-	{ targetProperties }: { targetProperties: any }
+	{ targetProperties, buildHttp }: { targetProperties: any; buildHttp: boolean }
 ) => {
-	D(externalsPresets, "web", targetProperties?.web);
+	D(externalsPresets, "web", !buildHttp && targetProperties?.web);
 	D(externalsPresets, "node", targetProperties?.node);
 	D(externalsPresets, "electron", targetProperties?.electron);
 	D(
@@ -899,7 +943,8 @@ const applyOptimizationDefaults = (
 		css
 	}: { production: boolean; development: boolean; css: boolean }
 ) => {
-	D(optimization, "removeAvailableModules", false);
+	// IGNORE(optimization.removeAvailableModules): removeAvailableModules is no use for webpack
+	D(optimization, "removeAvailableModules", true);
 	D(optimization, "removeEmptyChunks", true);
 	D(optimization, "mergeDuplicateChunks", true);
 	F(optimization, "moduleIds", (): "natural" | "named" | "deterministic" => {
@@ -920,6 +965,8 @@ const applyOptimizationDefaults = (
 	D(optimization, "emitOnErrors", !production);
 	D(optimization, "runtimeChunk", false);
 	D(optimization, "realContentHash", production);
+	// IGNORE(optimization.avoidEntryIife): to update the default value of webpack and bump webpack version in Rspack.
+	D(optimization, "avoidEntryIife", false);
 	D(optimization, "minimize", production);
 	D(optimization, "concatenateModules", production);
 	// IGNORE(optimization.minimizer): Rspack use `SwcJsMinimizerRspackPlugin` and `LightningCssMinimizerRspackPlugin` by default
@@ -1032,6 +1079,9 @@ const getResolveDefaults = ({
 	});
 
 	const resolveOptions: ResolveOptions = {
+		// enable pnp only in pnp environment, see https://yarnpkg.com/advanced/pnpapi#processversionspnp
+		// IGNORE(resolve.pnp): Rspack use `resolve.enable` to enable Yarn PnP feature
+		pnp: getPnpDefault(),
 		modules: ["node_modules"],
 		conditionNames: conditions,
 		mainFiles: ["index"],
@@ -1052,7 +1102,7 @@ const getResolveDefaults = ({
 				preferRelative: true
 			},
 			commonjs: cjsDeps(),
-			// amd: cjsDeps(),
+			amd: cjsDeps(),
 			// for backward-compat: loadModule
 			// loader: cjsDeps(),
 			// for backward-compat: Custom Dependency and getResolve without dependencyType
@@ -1123,4 +1173,8 @@ const A = <T, P extends keyof T>(
 			}
 		}
 	}
+};
+
+export const getPnpDefault = () => {
+	return !!process.versions.pnp;
 };

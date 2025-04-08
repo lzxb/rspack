@@ -1,7 +1,8 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AsModuleDependency, Compilation, ContextDependency, ContextOptions, Dependency,
-  DependencyCategory, DependencyId, DependencyRange, DependencyTemplate, DependencyType,
-  ModuleGraph, RuntimeSpec, TemplateContext, TemplateReplaceSource,
+  AsModuleDependency, ContextDependency, ContextOptions, Dependency, DependencyCategory,
+  DependencyId, DependencyRange, DependencyTemplate, DependencyType, FactorizeInfo, ModuleGraph,
+  TemplateContext, TemplateReplaceSource,
 };
 use rspack_error::Diagnostic;
 
@@ -9,37 +10,41 @@ use super::{
   context_dependency_template_as_require_call, create_resource_identifier_for_context_dependency,
 };
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct CommonJsRequireContextDependency {
   id: DependencyId,
   range: DependencyRange,
-  range_callee: DependencyRange,
+  value_range: Option<DependencyRange>,
   resource_identifier: String,
   options: ContextOptions,
   optional: bool,
   critical: Option<Diagnostic>,
+  factorize_info: FactorizeInfo,
 }
 
 impl CommonJsRequireContextDependency {
   pub fn new(
     options: ContextOptions,
     range: DependencyRange,
-    range_callee: DependencyRange,
+    value_range: Option<DependencyRange>,
     optional: bool,
   ) -> Self {
     let resource_identifier = create_resource_identifier_for_context_dependency(None, &options);
     Self {
       range,
-      range_callee,
+      value_range,
       options,
       resource_identifier,
       optional,
       id: DependencyId::new(),
       critical: None,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for CommonJsRequireContextDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -105,8 +110,17 @@ impl ContextDependency for CommonJsRequireContextDependency {
   fn critical_mut(&mut self) -> &mut Option<Diagnostic> {
     &mut self.critical
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for CommonJsRequireContextDependency {
   fn apply(
     &self,
@@ -117,22 +131,9 @@ impl DependencyTemplate for CommonJsRequireContextDependency {
       self,
       source,
       code_generatable_context,
-      self.range_callee.start,
-      self.range_callee.end,
-      self.range.end,
+      &self.range,
+      self.value_range.as_ref(),
     );
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

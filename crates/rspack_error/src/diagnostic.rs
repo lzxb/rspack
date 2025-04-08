@@ -1,7 +1,8 @@
-use std::{fmt, ops::Deref, sync::Arc};
+use std::{borrow::Cow, fmt, ops::Deref, sync::Arc};
 
 use cow_utils::CowUtils;
 use miette::{GraphicalTheme, IntoDiagnostic, MietteDiagnostic};
+use rspack_cacheable::{cacheable, with::Unsupported};
 use rspack_collections::Identifier;
 use rspack_paths::{Utf8Path, Utf8PathBuf};
 use swc_core::common::{SourceMap, Span};
@@ -59,12 +60,14 @@ impl fmt::Display for RspackSeverity {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy)]
 pub struct SourcePosition {
   pub line: usize,
   pub column: usize,
 }
 
+#[cacheable]
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorLocation {
   pub start: SourcePosition,
@@ -89,6 +92,7 @@ impl ErrorLocation {
   }
 }
 
+#[cacheable(with=Unsupported)]
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
   inner: Arc<miette::Error>,
@@ -253,26 +257,23 @@ impl Diagnostic {
 }
 
 pub trait Diagnosable {
-  fn add_diagnostic(&self, _diagnostic: Diagnostic) {
-    unimplemented!("`<T as Diagnosable>::add_diagnostic` is not implemented")
-  }
-  fn add_diagnostics(&self, _diagnostics: Vec<Diagnostic>) {
-    unimplemented!("`<T as Diagnosable>::add_diagnostics` is not implemented")
-  }
-  /// Clone diagnostics from current [Diagnosable].
-  /// This does not drain the diagnostics from the current one.
-  fn clone_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-  /// Take diagnostics from current [Diagnosable].
-  /// This drains every diagnostic from the current one.
-  fn take_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-  /// Pipe diagnostics from the current [Diagnosable] to the target one.
-  /// This drains every diagnostic from current, and pipe into the target one.
-  fn pipe_diagnostics(&self, target: &dyn Diagnosable) {
-    target.add_diagnostics(self.take_diagnostics())
+  fn add_diagnostic(&mut self, _diagnostic: Diagnostic);
+
+  fn add_diagnostics(&mut self, _diagnostics: Vec<Diagnostic>);
+
+  fn diagnostics(&self) -> Cow<[Diagnostic]>;
+
+  fn first_error(&self) -> Option<Cow<Diagnostic>> {
+    match self.diagnostics() {
+      Cow::Borrowed(diagnostics) => diagnostics
+        .iter()
+        .find(|d| d.severity() == Severity::Error)
+        .map(Cow::Borrowed),
+      Cow::Owned(diagnostics) => diagnostics
+        .into_iter()
+        .find(|d| d.severity() == Severity::Error)
+        .map(Cow::Owned),
+    }
   }
 }
 
@@ -280,17 +281,20 @@ pub trait Diagnosable {
 macro_rules! impl_empty_diagnosable_trait {
   ($ty:ty) => {
     impl $crate::Diagnosable for $ty {
-      fn add_diagnostic(&self, _diagnostic: $crate::Diagnostic) {
+      fn add_diagnostic(&mut self, _diagnostic: $crate::Diagnostic) {
         unimplemented!(
           "`<{ty} as Diagnosable>::add_diagnostic` is not implemented",
           ty = stringify!($ty)
         )
       }
-      fn add_diagnostics(&self, _diagnostics: Vec<$crate::Diagnostic>) {
+      fn add_diagnostics(&mut self, _diagnostics: Vec<$crate::Diagnostic>) {
         unimplemented!(
           "`<{ty} as Diagnosable>::add_diagnostics` is not implemented",
           ty = stringify!($ty)
         )
+      }
+      fn diagnostics(&self) -> std::borrow::Cow<[$crate::Diagnostic]> {
+        std::borrow::Cow::Owned(vec![])
       }
     }
   };

@@ -16,12 +16,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use swc_core::common::{
-  comments::{Comment, Comments},
-  BytePos, Span, DUMMY_SP,
+use swc_core::{
+  common::{
+    comments::{Comment, Comments},
+    BytePos, Span, DUMMY_SP,
+  },
+  ecma::{
+    ast::{Module, Script},
+    visit::{noop_visit_mut_type, visit_mut_pass, VisitMut, VisitMutWith},
+  },
 };
-use swc_core::ecma::ast::{Module, Script};
-use swc_core::ecma::visit::{noop_visit_mut_type, visit_mut_pass, VisitMut, VisitMutWith};
 use swc_node_comments::SwcComments;
 
 /// Preserves comments that would otherwise be dropped.
@@ -35,7 +39,6 @@ use swc_node_comments::SwcComments;
 /// This transformer shifts orphaned comments to the next closest known span
 /// while making a best-effort to preserve the "general orientation" of
 /// comments.
-
 pub fn dropped_comments_preserver(comments: Option<SwcComments>) -> impl VisitMut {
   visit_mut_pass(DroppedCommentsPreserver {
     comments,

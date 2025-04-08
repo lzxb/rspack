@@ -1,42 +1,61 @@
 use itertools::Itertools;
-use rspack_core::{
-  create_exports_object_referenced, module_raw, Compilation, DependencyRange, DependencyType,
-  ExtendedReferencedExport, ModuleGraph, NormalInitFragment, RuntimeSpec, UsedName,
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsPreset, AsVec, Skip},
 };
-use rspack_core::{AsContextDependency, Dependency, InitFragmentKey, InitFragmentStage};
-use rspack_core::{DependencyCategory, DependencyId, DependencyTemplate};
-use rspack_core::{ModuleDependency, TemplateContext, TemplateReplaceSource};
+use rspack_core::{
+  create_exports_object_referenced, module_raw, AsContextDependency, Compilation, Dependency,
+  DependencyCategory, DependencyId, DependencyLocation, DependencyRange, DependencyTemplate,
+  DependencyType, ExtendedReferencedExport, FactorizeInfo, InitFragmentKey, InitFragmentStage,
+  ModuleDependency, ModuleGraph, NormalInitFragment, RuntimeSpec, SharedSourceMap, TemplateContext,
+  TemplateReplaceSource, UsedName,
+};
 use rspack_util::ext::DynHash;
 use swc_core::atoms::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ProvideDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
   identifier: String,
+  #[cacheable(with=AsVec<AsPreset>)]
   ids: Vec<Atom>,
   range: DependencyRange,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
+  factorize_info: FactorizeInfo,
 }
 
 impl ProvideDependency {
-  pub fn new(range: DependencyRange, request: Atom, identifier: String, ids: Vec<Atom>) -> Self {
+  pub fn new(
+    range: DependencyRange,
+    request: Atom,
+    identifier: String,
+    ids: Vec<Atom>,
+    source_map: Option<SharedSourceMap>,
+  ) -> Self {
     Self {
       range,
       request,
+      source_map,
       identifier,
       ids,
       id: DependencyId::new(),
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ProvideDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn category(&self) -> &DependencyCategory {
@@ -64,6 +83,7 @@ impl Dependency for ProvideDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ProvideDependency {
   fn request(&self) -> &str {
     &self.request
@@ -76,8 +96,17 @@ impl ModuleDependency for ProvideDependency {
   fn set_request(&mut self, request: String) {
     self.request = request.into();
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ProvideDependency {
   fn apply(
     &self,
@@ -118,10 +147,6 @@ impl DependencyTemplate for ProvideDependency {
       None,
     )));
     source.replace(self.range.start, self.range.end, &self.identifier, None);
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
   }
 
   fn update_hash(

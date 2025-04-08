@@ -5,7 +5,7 @@ Object {
   amd: undefined,
   bail: false,
   cache: false,
-  context: <ROOT>,
+  context: <TEST_TOOLS_ROOT>,
   dependencies: undefined,
   devServer: undefined,
   devtool: false,
@@ -18,11 +18,13 @@ Object {
   },
   experiments: Object {
     asyncWebAssembly: false,
-    cache: true,
+    buildHttp: undefined,
+    cache: false,
     css: undefined,
     futureDefaults: false,
     incremental: Object {
       buildChunkGraph: false,
+      chunkIds: false,
       chunksHashes: false,
       chunksRender: false,
       chunksRuntimeRequirements: false,
@@ -30,13 +32,17 @@ Object {
       emitAssets: true,
       inferAsyncModules: false,
       make: true,
+      moduleIds: false,
       modulesCodegen: false,
       modulesHashes: false,
       modulesRuntimeRequirements: false,
       providedExports: false,
+      sideEffects: false,
     },
     layers: false,
     lazyCompilation: false,
+    parallelCodeSplitting: true,
+    parallelLoader: false,
     rspackFuture: Object {
       bundlerInfo: Object {
         bundler: rspack,
@@ -164,7 +170,11 @@ Object {
         },
       },
     ],
-    generator: Object {},
+    generator: Object {
+      json: Object {
+        JSONParse: true,
+      },
+    },
     noParse: undefined,
     parser: Object {
       asset: Object {
@@ -190,6 +200,9 @@ Object {
         wrappedContextCritical: false,
         wrappedContextRegExp: /\\.\\*/,
       },
+      json: Object {
+        exportsDepth: 9007199254740991,
+      },
     },
     rules: Array [],
   },
@@ -200,6 +213,7 @@ Object {
     global: warn,
   },
   optimization: Object {
+    avoidEntryIife: false,
     chunkIds: natural,
     concatenateModules: false,
     emitOnErrors: true,
@@ -223,7 +237,7 @@ Object {
     nodeEnv: false,
     providedExports: true,
     realContentHash: false,
-    removeAvailableModules: false,
+    removeAvailableModules: true,
     removeEmptyChunks: true,
     runtimeChunk: false,
     sideEffects: flag,
@@ -271,7 +285,6 @@ Object {
     crossOriginLoading: false,
     cssChunkFilename: [name].css,
     cssFilename: [name].css,
-    cssHeadDataCompression: true,
     devtoolFallbackModuleFilenameTemplate: undefined,
     devtoolModuleFilenameTemplate: undefined,
     devtoolNamespace: @rspack/test-tools,
@@ -313,7 +326,7 @@ Object {
     importMetaName: import.meta,
     library: undefined,
     module: false,
-    path: <ROOT>/dist,
+    path: <TEST_TOOLS_ROOT>/dist,
     pathinfo: false,
     publicPath: auto,
     scriptType: false,
@@ -333,6 +346,26 @@ Object {
   resolve: Object {
     aliasFields: Array [],
     byDependency: Object {
+      amd: Object {
+        aliasFields: Array [
+          browser,
+        ],
+        conditionNames: Array [
+          require,
+          module,
+          ...,
+        ],
+        extensions: Array [
+          .js,
+          .json,
+          .wasm,
+        ],
+        mainFields: Array [
+          browser,
+          module,
+          ...,
+        ],
+      },
       commonjs: Object {
         aliasFields: Array [
           browser,
@@ -459,8 +492,9 @@ Object {
     modules: Array [
       node_modules,
     ],
+    pnp: false,
     roots: Array [
-      <ROOT>,
+      <TEST_TOOLS_ROOT>,
     ],
   },
   resolveLoader: Object {

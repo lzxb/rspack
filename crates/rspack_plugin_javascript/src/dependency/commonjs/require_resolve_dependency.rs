@@ -1,9 +1,11 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  module_id, AsContextDependency, Compilation, Dependency, DependencyCategory, DependencyId,
-  DependencyRange, DependencyTemplate, DependencyType, ExtendedReferencedExport, ModuleDependency,
+  module_id, AsContextDependency, Dependency, DependencyCategory, DependencyId, DependencyRange,
+  DependencyTemplate, DependencyType, ExtendedReferencedExport, FactorizeInfo, ModuleDependency,
   ModuleGraph, RuntimeSpec, TemplateContext, TemplateReplaceSource,
 };
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct RequireResolveDependency {
   pub id: DependencyId,
@@ -11,6 +13,7 @@ pub struct RequireResolveDependency {
   pub weak: bool,
   range: DependencyRange,
   optional: bool,
+  factorize_info: FactorizeInfo,
 }
 
 impl RequireResolveDependency {
@@ -21,10 +24,12 @@ impl RequireResolveDependency {
       weak,
       optional,
       id: DependencyId::new(),
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for RequireResolveDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -55,6 +60,7 @@ impl Dependency for RequireResolveDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for RequireResolveDependency {
   fn request(&self) -> &str {
     &self.request
@@ -75,8 +81,17 @@ impl ModuleDependency for RequireResolveDependency {
   fn set_request(&mut self, request: String) {
     self.request = request;
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for RequireResolveDependency {
   fn apply(
     &self,
@@ -95,18 +110,6 @@ impl DependencyTemplate for RequireResolveDependency {
       .as_str(),
       None,
     );
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

@@ -1,12 +1,14 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  module_raw, AsModuleDependency, Compilation, ContextDependency, ContextOptions, Dependency,
+  module_raw, AsModuleDependency, ContextDependency, ContextOptions, Dependency,
   DependencyCategory, DependencyId, DependencyRange, DependencyTemplate, DependencyType,
-  ModuleGraph, RuntimeSpec, TemplateContext, TemplateReplaceSource,
+  FactorizeInfo, ModuleGraph, TemplateContext, TemplateReplaceSource,
 };
 use rspack_error::Diagnostic;
 
 use super::create_resource_identifier_for_context_dependency;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct RequireContextDependency {
   id: DependencyId,
@@ -15,6 +17,7 @@ pub struct RequireContextDependency {
   resource_identifier: String,
   optional: bool,
   critical: Option<Diagnostic>,
+  factorize_info: FactorizeInfo,
 }
 
 impl RequireContextDependency {
@@ -27,10 +30,12 @@ impl RequireContextDependency {
       resource_identifier,
       optional,
       critical: None,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for RequireContextDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -96,8 +101,17 @@ impl ContextDependency for RequireContextDependency {
   fn critical_mut(&mut self) -> &mut Option<Diagnostic> {
     &mut self.critical
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for RequireContextDependency {
   fn apply(
     &self,
@@ -118,18 +132,6 @@ impl DependencyTemplate for RequireContextDependency {
       self.optional,
     );
     source.replace(self.range.start, self.range.end, &content, None);
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

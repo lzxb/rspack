@@ -16,7 +16,6 @@ import type {
 	RspackOptionsNormalized,
 	RspackPluginFunction
 } from ".";
-import { Module } from "./Module";
 import {
 	APIPlugin,
 	ArrayPushCallbackChunkFormatPlugin,
@@ -42,20 +41,22 @@ import {
 	FlagDependencyExportsPlugin,
 	FlagDependencyUsagePlugin,
 	HttpExternalsRspackPlugin,
+	HttpUriPlugin,
 	InferAsyncModulesPlugin,
 	JavascriptModulesPlugin,
 	JsonModulesPlugin,
-	LazyCompilationPlugin,
 	MangleExportsPlugin,
 	MergeDuplicateChunksPlugin,
 	ModuleChunkFormatPlugin,
 	ModuleConcatenationPlugin,
+	ModuleInfoHeaderPlugin,
 	NamedChunkIdsPlugin,
 	NamedModuleIdsPlugin,
 	NaturalChunkIdsPlugin,
 	NaturalModuleIdsPlugin,
 	NoEmitOnErrorsPlugin,
 	NodeTargetPlugin,
+	OccurrenceChunkIdsPlugin,
 	RealContentHashPlugin,
 	RemoveEmptyChunksPlugin,
 	RuntimeChunkPlugin,
@@ -64,7 +65,6 @@ import {
 	SizeLimitsPlugin,
 	SourceMapDevToolPlugin,
 	SplitChunksPlugin,
-	WarnCaseSensitiveModulesPlugin,
 	WorkerPlugin
 } from "./builtin-plugin";
 import EntryOptionPlugin from "./lib/EntryOptionPlugin";
@@ -131,6 +131,12 @@ export class RspackOptionsApply {
 
 		new ChunkPrefetchPreloadPlugin().apply(compiler);
 
+		if (options.output.pathinfo) {
+			new ModuleInfoHeaderPlugin(options.output.pathinfo === "verbose").apply(
+				compiler
+			);
+		}
+
 		if (typeof options.output.chunkFormat === "string") {
 			switch (options.output.chunkFormat) {
 				case "array-push": {
@@ -188,6 +194,7 @@ export class RspackOptionsApply {
 				const cheap = options.devtool.includes("cheap");
 				const moduleMaps = options.devtool.includes("module");
 				const noSources = options.devtool.includes("nosources");
+				const debugIds = options.devtool.includes("debugids");
 				const Plugin = evalWrapped
 					? EvalSourceMapDevToolPlugin
 					: SourceMapDevToolPlugin;
@@ -200,7 +207,8 @@ export class RspackOptionsApply {
 					module: moduleMaps ? true : !cheap,
 					columns: !cheap,
 					noSources: noSources,
-					namespace: options.output.devtoolNamespace
+					namespace: options.output.devtoolNamespace,
+					debugIds: debugIds
 				}).apply(compiler);
 			} else if (options.devtool.includes("eval")) {
 				new EvalDevToolModulePlugin({
@@ -238,6 +246,10 @@ export class RspackOptionsApply {
 		new DataUriPlugin().apply(compiler);
 		new FileUriPlugin().apply(compiler);
 
+		if (options.experiments.buildHttp) {
+			new HttpUriPlugin(options.experiments.buildHttp).apply(compiler);
+		}
+
 		new EnsureChunkConditionsPlugin().apply(compiler);
 		if (options.optimization.mergeDuplicateChunks) {
 			new MergeDuplicateChunksPlugin().apply(compiler);
@@ -262,26 +274,6 @@ export class RspackOptionsApply {
 		if (options.optimization.mangleExports) {
 			new MangleExportsPlugin(
 				options.optimization.mangleExports !== "size"
-			).apply(compiler);
-		}
-
-		if (options.experiments.lazyCompilation) {
-			const lazyOptions = options.experiments.lazyCompilation;
-
-			new LazyCompilationPlugin(
-				// this is only for test
-				// @ts-expect-error cacheable is hide
-				lazyOptions.cacheable ?? true,
-				lazyOptions.entries ?? true,
-				lazyOptions.imports ?? true,
-				typeof lazyOptions.test === "function"
-					? jsModule =>
-							(lazyOptions.test as (jsModule: Module) => boolean)!.call(
-								lazyOptions,
-								new Module(jsModule)
-							)
-					: lazyOptions.test,
-				lazyOptions.backend
 			).apply(compiler);
 		}
 
@@ -327,6 +319,7 @@ export class RspackOptionsApply {
 			switch (chunkIds) {
 				case "natural": {
 					new NaturalChunkIdsPlugin().apply(compiler);
+					break;
 				}
 				case "named": {
 					new NamedChunkIdsPlugin().apply(compiler);
@@ -334,6 +327,18 @@ export class RspackOptionsApply {
 				}
 				case "deterministic": {
 					new DeterministicChunkIdsPlugin().apply(compiler);
+					break;
+				}
+				case "size": {
+					new OccurrenceChunkIdsPlugin({
+						prioritiseInitial: true
+					}).apply(compiler);
+					break;
+				}
+				case "total-size": {
+					new OccurrenceChunkIdsPlugin({
+						prioritiseInitial: false
+					}).apply(compiler);
 					break;
 				}
 				default:
@@ -359,8 +364,6 @@ export class RspackOptionsApply {
 		if (options.performance) {
 			new SizeLimitsPlugin(options.performance).apply(compiler);
 		}
-
-		new WarnCaseSensitiveModulesPlugin().apply(compiler);
 
 		if (options.cache) {
 			new MemoryCachePlugin().apply(compiler);

@@ -1,8 +1,7 @@
-use std::borrow::Cow;
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use regex::Regex;
-use rspack_error::{error, Result};
+use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rustc_hash::FxHashSet as HashSet;
 
 pub static SAFE_IDENTIFIER: LazyLock<Regex> =
@@ -52,7 +51,6 @@ pub static RESERVED_IDENTIFIER: LazyLock<HashSet<&str>> = LazyLock::new(|| {
     "public",
     "static",
     "yield",
-    "yield",
     // module code
     "await",
     // skip future reserved keywords defined under ES1 till ES3
@@ -68,7 +66,7 @@ pub fn property_name(prop: &str) -> Result<Cow<str>> {
     Ok(Cow::from(prop))
   } else {
     serde_json::to_string(prop)
-      .map_err(|e| error!(e.to_string()))
+      .to_rspack_result()
       .map(Cow::from)
   }
 }

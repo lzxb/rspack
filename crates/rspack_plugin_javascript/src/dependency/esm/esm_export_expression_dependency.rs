@@ -1,22 +1,25 @@
 use itertools::Itertools;
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
 use rspack_collections::{Identifier, IdentifierSet};
-use rspack_core::rspack_sources::ReplacementEnforce;
 use rspack_core::{
-  property_access, AsContextDependency, AsModuleDependency, Compilation, Dependency, DependencyId,
-  DependencyRange, DependencyTemplate, DependencyType, ESMExportInitFragment, ExportNameOrSpec,
-  ExportsOfExportsSpec, ExportsSpec, ModuleGraph, RuntimeGlobals, RuntimeSpec, TemplateContext,
+  property_access, rspack_sources::ReplacementEnforce, AsContextDependency, AsModuleDependency,
+  Compilation, Dependency, DependencyId, DependencyLocation, DependencyRange, DependencyTemplate,
+  DependencyType, ESMExportInitFragment, ExportNameOrSpec, ExportsOfExportsSpec, ExportsSpec,
+  ModuleGraph, RuntimeGlobals, RuntimeSpec, SharedSourceMap, TemplateContext,
   TemplateReplaceSource, UsedName, DEFAULT_EXPORT,
 };
 use swc_core::atoms::Atom;
 
 use crate::parser_plugin::JS_DEFAULT_KEYWORD;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub enum DeclarationId {
   Id(String),
   Func(DeclarationInfo),
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct DeclarationInfo {
   range: DependencyRange,
@@ -34,6 +37,7 @@ impl DeclarationInfo {
   }
 }
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMExportExpressionDependency {
   id: DependencyId,
@@ -41,6 +45,8 @@ pub struct ESMExportExpressionDependency {
   range_stmt: DependencyRange,
   prefix: String,
   declaration: Option<DeclarationId>,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
 }
 
 impl ESMExportExpressionDependency {
@@ -49,17 +55,20 @@ impl ESMExportExpressionDependency {
     range_stmt: DependencyRange,
     prefix: String,
     declaration: Option<DeclarationId>,
+    source_map: Option<SharedSourceMap>,
   ) -> Self {
     Self {
+      id: DependencyId::default(),
       range,
       range_stmt,
       declaration,
       prefix,
-      id: DependencyId::default(),
+      source_map,
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ESMExportExpressionDependency {
   fn dependency_type(&self) -> &DependencyType {
     &DependencyType::EsmExportExpression
@@ -69,8 +78,8 @@ impl Dependency for ESMExportExpressionDependency {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn get_exports(&self, _mg: &ModuleGraph) -> Option<ExportsSpec> {
@@ -104,6 +113,7 @@ impl Dependency for ESMExportExpressionDependency {
 impl AsModuleDependency for ESMExportExpressionDependency {}
 impl AsContextDependency for ESMExportExpressionDependency {}
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMExportExpressionDependency {
   fn apply(
     &self,
@@ -241,17 +251,5 @@ impl DependencyTemplate for ESMExportExpressionDependency {
         ReplacementEnforce::Post,
       );
     }
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }

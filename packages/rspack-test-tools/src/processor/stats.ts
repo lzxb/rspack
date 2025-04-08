@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Compiler, Stats } from "@rspack/core";
 
-import { escapeEOL } from "../helper";
+import { normalizePlaceholder } from "../helper/expect/placeholder";
 import captureStdio from "../helper/legacy/captureStdio";
 import type {
 	ECompilerType,
@@ -13,7 +13,10 @@ import type {
 import { type IMultiTaskProcessorOptions, MultiTaskProcessor } from "./multi";
 
 export interface IStatsProcessorOptions<T extends ECompilerType>
-	extends Omit<IMultiTaskProcessorOptions<T>, "runable"> {}
+	extends Omit<IMultiTaskProcessorOptions<T>, "runable"> {
+	snapshotName?: string;
+	writeStatsOuptut?: boolean;
+}
 
 const REG_ERROR_CASE = /error$/;
 
@@ -25,6 +28,8 @@ export class StatsProcessor<
 	T extends ECompilerType
 > extends MultiTaskProcessor<T> {
 	private stderr: any;
+	private snapshotName?: string;
+	private writeStatsOuptut?: boolean;
 	constructor(_statsOptions: IStatsProcessorOptions<T>) {
 		super({
 			defaultOptions: StatsProcessor.defaultOptions<T>,
@@ -32,6 +37,8 @@ export class StatsProcessor<
 			runable: false,
 			..._statsOptions
 		});
+		this.snapshotName = _statsOptions.snapshotName;
+		this.writeStatsOuptut = _statsOptions.writeStatsOuptut;
 	}
 
 	async before(context: ITestContext) {
@@ -63,7 +70,7 @@ export class StatsProcessor<
 							if (err) return callback(err);
 							if (!/\.(js|json|txt)$/.test(args[0]))
 								return callback(null, result);
-							callback(null, escapeEOL(result.toString("utf-8")));
+							callback(null, normalizePlaceholder(result.toString("utf-8")));
 						}
 					]) as Parameters<typeof ifs.readFile>
 				);
@@ -110,7 +117,7 @@ export class StatsProcessor<
 					// errorDetails: true
 				})
 			);
-		} else {
+		} else if (this.writeStatsOuptut) {
 			fs.writeFileSync(
 				path.join(context.getDist(), "stats.txt"),
 				stats.toString({
@@ -156,9 +163,16 @@ export class StatsProcessor<
 			actual = actual
 				.replace(/\u001b\[[0-9;]*m/g, "")
 				// CHANGE: The time unit display in Rspack is second
-				.replace(/[.0-9]+(\s?s)/g, "X$1");
+				.replace(/[.0-9]+(\s?s)/g, "X$1")
+				// CHANGE: Replace bundle size, since bundle sizes may differ between platforms
+				.replace(/[0-9]+\.?[0-9]+ KiB/g, "xx KiB");
 		}
-		env.expect(new RspackStats(actual)).toMatchSnapshot();
+
+		if (this.snapshotName) {
+			env.expect(new RspackStats(actual)).toMatchSnapshot(this.snapshotName);
+		} else {
+			env.expect(new RspackStats(actual)).toMatchSnapshot();
+		}
 		const testConfig = context.getTestConfig();
 		if (typeof testConfig?.validate === "function") {
 			testConfig.validate(stats, this.stderr.toString());

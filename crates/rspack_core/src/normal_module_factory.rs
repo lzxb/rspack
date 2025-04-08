@@ -1,7 +1,10 @@
-use std::sync::LazyLock;
-use std::{borrow::Cow, sync::Arc};
+use std::{
+  borrow::Cow,
+  sync::{Arc, LazyLock},
+};
 
 use regex::Regex;
+use rspack_cacheable::cacheable;
 use rspack_error::{error, Result};
 use rspack_hook::define_hook;
 use rspack_loader_runner::{get_scheme, Loader, Scheme};
@@ -12,25 +15,26 @@ use swc_core::common::Span;
 
 use crate::{
   diagnostics::EmptyDependency, module_rules_matcher, parse_resource, resolve,
-  stringify_loaders_and_resource, BoxLoader, BoxModule, CompilerOptions, Context, Dependency,
-  DependencyCategory, DependencyRange, FuncUseCtx, GeneratorOptions, ModuleExt, ModuleFactory,
-  ModuleFactoryCreateData, ModuleFactoryResult, ModuleIdentifier, ModuleLayer, ModuleRuleEffect,
-  ModuleRuleEnforce, ModuleRuleUse, ModuleRuleUseLoader, ModuleType, NormalModule,
-  ParserAndGenerator, ParserOptions, RawModule, Resolve, ResolveArgs,
-  ResolveOptionsWithDependencyType, ResolveResult, Resolver, ResolverFactory, ResourceData,
-  ResourceParsedData, RunnerContext, SharedPluginDriver,
+  stringify_loaders_and_resource, AssetInlineGeneratorOptions, AssetResourceGeneratorOptions,
+  BoxLoader, BoxModule, CompilerOptions, Context, CssAutoGeneratorOptions, CssAutoParserOptions,
+  CssModuleGeneratorOptions, CssModuleParserOptions, Dependency, DependencyCategory,
+  DependencyRange, FuncUseCtx, GeneratorOptions, ModuleExt, ModuleFactory, ModuleFactoryCreateData,
+  ModuleFactoryResult, ModuleIdentifier, ModuleLayer, ModuleRuleEffect, ModuleRuleEnforce,
+  ModuleRuleUse, ModuleRuleUseLoader, ModuleType, NormalModule, ParserAndGenerator, ParserOptions,
+  RawModule, Resolve, ResolveArgs, ResolveOptionsWithDependencyType, ResolveResult, Resolver,
+  ResolverFactory, ResourceData, ResourceParsedData, RunnerContext, SharedPluginDriver,
 };
 
-define_hook!(NormalModuleFactoryBeforeResolve: AsyncSeriesBail(data: &mut ModuleFactoryCreateData) -> bool);
-define_hook!(NormalModuleFactoryFactorize: AsyncSeriesBail(data: &mut ModuleFactoryCreateData) -> BoxModule);
-define_hook!(NormalModuleFactoryResolve: AsyncSeriesBail(data: &mut ModuleFactoryCreateData) -> NormalModuleFactoryResolveResult);
-define_hook!(NormalModuleFactoryResolveForScheme: AsyncSeriesBail(data: &mut ModuleFactoryCreateData, resource_data: &mut ResourceData, for_name: &Scheme) -> bool);
-define_hook!(NormalModuleFactoryResolveInScheme: AsyncSeriesBail(data: &mut ModuleFactoryCreateData, resource_data: &mut ResourceData, for_name: &Scheme) -> bool);
-define_hook!(NormalModuleFactoryAfterResolve: AsyncSeriesBail(data: &mut ModuleFactoryCreateData, create_data: &mut NormalModuleCreateData) -> bool);
-define_hook!(NormalModuleFactoryCreateModule: AsyncSeriesBail(data: &mut ModuleFactoryCreateData, create_data: &mut NormalModuleCreateData) -> BoxModule);
-define_hook!(NormalModuleFactoryModule: AsyncSeries(data: &mut ModuleFactoryCreateData, create_data: &mut NormalModuleCreateData, module: &mut BoxModule));
-define_hook!(NormalModuleFactoryParser: SyncSeries(module_type: &ModuleType, parser: &mut dyn ParserAndGenerator, parser_options: Option<&ParserOptions>));
-define_hook!(NormalModuleFactoryResolveLoader: AsyncSeriesBail(context: &Context, resolver: &Resolver, l: &ModuleRuleUseLoader) -> BoxLoader);
+define_hook!(NormalModuleFactoryBeforeResolve: SeriesBail(data: &mut ModuleFactoryCreateData) -> bool);
+define_hook!(NormalModuleFactoryFactorize: SeriesBail(data: &mut ModuleFactoryCreateData) -> BoxModule);
+define_hook!(NormalModuleFactoryResolve: SeriesBail(data: &mut ModuleFactoryCreateData) -> NormalModuleFactoryResolveResult);
+define_hook!(NormalModuleFactoryResolveForScheme: SeriesBail(data: &mut ModuleFactoryCreateData, resource_data: &mut ResourceData, for_name: &Scheme) -> bool);
+define_hook!(NormalModuleFactoryResolveInScheme: SeriesBail(data: &mut ModuleFactoryCreateData, resource_data: &mut ResourceData, for_name: &Scheme) -> bool);
+define_hook!(NormalModuleFactoryAfterResolve: SeriesBail(data: &mut ModuleFactoryCreateData, create_data: &mut NormalModuleCreateData) -> bool);
+define_hook!(NormalModuleFactoryCreateModule: SeriesBail(data: &mut ModuleFactoryCreateData, create_data: &mut NormalModuleCreateData) -> BoxModule);
+define_hook!(NormalModuleFactoryModule: Series(data: &mut ModuleFactoryCreateData, create_data: &mut NormalModuleCreateData, module: &mut BoxModule));
+define_hook!(NormalModuleFactoryParser: Series(module_type: &ModuleType, parser: &mut dyn ParserAndGenerator, parser_options: Option<&ParserOptions>));
+define_hook!(NormalModuleFactoryResolveLoader: SeriesBail(context: &Context, resolver: &Resolver, l: &ModuleRuleUseLoader) -> BoxLoader);
 
 pub enum NormalModuleFactoryResolveResult {
   Module(BoxModule),
@@ -329,7 +333,7 @@ impl NormalModuleFactory {
           span: dependency_source_span,
           // take the options is safe here, because it
           // is not used in after_resolve hooks
-          resolve_options: data.resolve_options.take(),
+          resolve_options: data.resolve_options.clone(),
           resolve_to_context: false,
           optional: dependency_optional,
           file_dependencies: &mut file_dependencies,
@@ -339,11 +343,7 @@ impl NormalModuleFactory {
         let resource_data = resolve(resolve_args, plugin_driver).await;
 
         match resource_data {
-          Ok(ResolveResult::Resource(resource)) => ResourceData::new(resource.full_path())
-            .path(resource.path)
-            .query(resource.query)
-            .fragment(resource.fragment)
-            .description_optional(resource.description_data),
+          Ok(ResolveResult::Resource(resource)) => resource.into(),
           Ok(ResolveResult::Ignored) => {
             let ident = format!("{}/{}", &data.context, resource);
             let module_identifier = ModuleIdentifier::from(format!("ignored|{ident}"));
@@ -416,13 +416,18 @@ impl NormalModuleFactory {
         let rule_use = match &rule.r#use {
           ModuleRuleUse::Array(array_use) => Cow::Borrowed(array_use),
           ModuleRuleUse::Func(func_use) => {
+            let resource_data_for_rules = match_resource_data.as_ref().unwrap_or(&resource_data);
             let context = FuncUseCtx {
               // align with webpack https://github.com/webpack/webpack/blob/899f06934391baede59da3dcd35b5ef51c675dbe/lib/NormalModuleFactory.js#L576
-              // resource shouldn't contain query otherwise it will cause duplicate query in https://github.com/unjs/unplugin/blob/62fdc5ae361d86a6ec39eaef5d8f01e12c6a794d/src/utils.ts#L58
-              resource: resource_data.resource_path.clone().map(|x| x.to_string()),
-              real_resource: Some(user_request.clone()),
+              resource: resource_data_for_rules
+                .resource_path
+                .as_ref()
+                .map(|x| x.to_string()),
+              resource_query: resource_data_for_rules.resource_query.clone(),
+              resource_fragment: resource_data_for_rules.resource_fragment.clone(),
+              real_resource: resource_data.resource_path.as_ref().map(|p| p.to_string()),
               issuer: data.issuer.clone(),
-              resource_query: resource_data.resource_query.clone(),
+              issuer_layer: data.issuer_layer.clone(),
             };
             Cow::Owned(func_use(context).await?)
           }
@@ -509,7 +514,6 @@ impl NormalModuleFactory {
     } else {
       resource_data.resource.clone()
     };
-    tracing::trace!("resolved uri {:?}", request);
 
     let file_dependency = resource_data.resource_path.clone();
 
@@ -546,11 +550,16 @@ impl NormalModuleFactory {
       resolved_parser_options.as_ref(),
       resolved_generator_options.as_ref(),
     );
-    self.plugin_driver.normal_module_factory_hooks.parser.call(
-      &resolved_module_type,
-      resolved_parser_and_generator.as_mut(),
-      resolved_parser_options.as_ref(),
-    )?;
+    self
+      .plugin_driver
+      .normal_module_factory_hooks
+      .parser
+      .call(
+        &resolved_module_type,
+        resolved_parser_and_generator.as_mut(),
+        resolved_parser_options.as_ref(),
+      )
+      .await?;
 
     let mut create_data = {
       let mut create_data = NormalModuleCreateData {
@@ -641,7 +650,7 @@ impl NormalModuleFactory {
     Ok(rules)
   }
 
-  fn calculate_resolve_options(&self, module_rules: &[&ModuleRuleEffect]) -> Option<Box<Resolve>> {
+  fn calculate_resolve_options(&self, module_rules: &[&ModuleRuleEffect]) -> Option<Arc<Resolve>> {
     let mut resolved: Option<Resolve> = None;
     for rule in module_rules {
       if let Some(rule_resolve) = &rule.resolve {
@@ -652,7 +661,7 @@ impl NormalModuleFactory {
         }
       }
     }
-    resolved.map(Box::new)
+    resolved.map(Arc::new)
   }
 
   fn calculate_side_effects(&self, module_rules: &[&ModuleRuleEffect]) -> Option<bool> {
@@ -687,18 +696,13 @@ impl NormalModuleFactory {
     parser: Option<ParserOptions>,
     generator: Option<GeneratorOptions>,
   ) -> (Option<ParserOptions>, Option<GeneratorOptions>) {
-    let global_parser = self
-      .options
-      .module
-      .parser
-      .as_ref()
-      .and_then(|p| match module_type {
+    let global_parser = self.options.module.parser.as_ref().and_then(|p| {
+      let options = p.get(module_type.as_str());
+      match module_type {
         ModuleType::JsAuto | ModuleType::JsDynamic | ModuleType::JsEsm => {
-          let options = p.get(module_type.as_str());
-          let javascript_options = p.get("javascript").cloned();
           // Merge `module.parser.["javascript/xxx"]` with `module.parser.["javascript"]` first
           rspack_util::merge_from_optional_with(
-            javascript_options,
+            p.get("javascript").cloned(),
             options,
             |javascript_options, options| match (javascript_options, options) {
               (
@@ -711,14 +715,71 @@ impl NormalModuleFactory {
             },
           )
         }
-        _ => p.get(module_type.as_str()).cloned(),
-      });
-    let global_generator = self
-      .options
-      .module
-      .generator
-      .as_ref()
-      .and_then(|g| g.get(module_type.as_str()).cloned());
+        ModuleType::CssAuto | ModuleType::CssModule => rspack_util::merge_from_optional_with(
+          p.get("css").cloned(),
+          options,
+          |css_options, options| match (css_options, options) {
+            (ParserOptions::Css(a), ParserOptions::CssAuto(b)) => {
+              ParserOptions::CssAuto(Into::<CssAutoParserOptions>::into(a).merge_from(b))
+            }
+            (ParserOptions::Css(a), ParserOptions::CssModule(b)) => {
+              ParserOptions::CssModule(Into::<CssModuleParserOptions>::into(a).merge_from(b))
+            }
+            _ => unreachable!(),
+          },
+        ),
+        _ => options.cloned(),
+      }
+    });
+    let global_generator = self.options.module.generator.as_ref().and_then(|g| {
+      let options = g.get(module_type.as_str());
+
+      match module_type {
+        ModuleType::AssetInline | ModuleType::AssetResource => {
+          rspack_util::merge_from_optional_with(
+            g.get("asset").cloned(),
+            options,
+            |asset_options, options| match (asset_options, options) {
+              (GeneratorOptions::Asset(a), GeneratorOptions::AssetInline(b)) => {
+                GeneratorOptions::AssetInline(
+                  Into::<AssetInlineGeneratorOptions>::into(a).merge_from(b),
+                )
+              }
+              (GeneratorOptions::Asset(a), GeneratorOptions::AssetResource(b)) => {
+                GeneratorOptions::AssetResource(
+                  Into::<AssetResourceGeneratorOptions>::into(a).merge_from(b),
+                )
+              }
+              _ => unreachable!(),
+            },
+          )
+        }
+        ModuleType::CssAuto | ModuleType::CssModule => rspack_util::merge_from_optional_with(
+          g.get("css").cloned(),
+          options,
+          |css_options, options| match (css_options, options) {
+            (GeneratorOptions::Css(a), GeneratorOptions::CssAuto(b)) => {
+              GeneratorOptions::CssAuto(Into::<CssAutoGeneratorOptions>::into(a).merge_from(b))
+            }
+            (GeneratorOptions::Css(a), GeneratorOptions::CssModule(b)) => {
+              GeneratorOptions::CssModule(Into::<CssModuleGeneratorOptions>::into(a).merge_from(b))
+            }
+            _ => unreachable!(),
+          },
+        ),
+        ModuleType::Json => rspack_util::merge_from_optional_with(
+          g.get("json").cloned(),
+          options,
+          |json_options, options| match (json_options, options) {
+            (GeneratorOptions::Json(a), GeneratorOptions::Json(b)) => {
+              GeneratorOptions::Json(a.merge_from(b))
+            }
+            _ => unreachable!(),
+          },
+        ),
+        _ => options.cloned(),
+      }
+    });
     let parser = rspack_util::merge_from_optional_with(
       global_parser,
       parser.as_ref(),
@@ -737,6 +798,7 @@ impl NormalModuleFactory {
           | ParserOptions::JavascriptDynamic(b)
           | ParserOptions::JavascriptEsm(b),
         ) => ParserOptions::Javascript(a.merge_from(b)),
+        (ParserOptions::Json(a), ParserOptions::Json(b)) => ParserOptions::Json(a.merge_from(b)),
         (global, _) => global,
       },
     );
@@ -749,9 +811,8 @@ impl NormalModuleFactory {
         | (GeneratorOptions::AssetResource(_), GeneratorOptions::AssetResource(_))
         | (GeneratorOptions::Css(_), GeneratorOptions::Css(_))
         | (GeneratorOptions::CssAuto(_), GeneratorOptions::CssAuto(_))
-        | (GeneratorOptions::CssModule(_), GeneratorOptions::CssModule(_)) => {
-          global.merge_from(local)
-        }
+        | (GeneratorOptions::CssModule(_), GeneratorOptions::CssModule(_))
+        | (GeneratorOptions::Json(_), GeneratorOptions::Json(_)) => global.merge_from(local),
         _ => global,
       },
     );
@@ -845,6 +906,7 @@ impl NormalModuleFactory {
 /// `u32` is 4 bytes on 64bit machine, comparing to `usize` which is 8 bytes.
 /// ## Warning
 /// [ErrorSpan] start from zero, and `Span` of `swc` start from one. see https://swc-css.netlify.app/?code=eJzLzC3ILypRSFRIK8rPVVAvSS0u0csqVgcAZaoIKg
+#[cacheable]
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, Default, PartialOrd, Ord)]
 pub struct ErrorSpan {
   pub start: u32,

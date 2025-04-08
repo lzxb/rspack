@@ -1,31 +1,36 @@
-use rspack_core::DependencyId;
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
 use rspack_core::{
-  AsContextDependency, AsModuleDependency, Compilation, Dependency, DependencyRange, RuntimeSpec,
+  AsContextDependency, AsModuleDependency, Dependency, DependencyId, DependencyLocation,
+  DependencyRange, DependencyTemplate, RuntimeGlobals, SharedSourceMap, TemplateContext,
 };
-use rspack_core::{DependencyTemplate, RuntimeGlobals, TemplateContext};
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct RequireHeaderDependency {
   id: DependencyId,
   range: DependencyRange,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
 }
 
 impl RequireHeaderDependency {
-  pub fn new(range: DependencyRange) -> Self {
+  pub fn new(range: DependencyRange, source_map: Option<SharedSourceMap>) -> Self {
     Self {
       id: DependencyId::new(),
       range,
+      source_map,
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for RequireHeaderDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn could_affect_referencing_module(&self) -> rspack_core::AffectType {
@@ -36,6 +41,7 @@ impl Dependency for RequireHeaderDependency {
 impl AsModuleDependency for RequireHeaderDependency {}
 impl AsContextDependency for RequireHeaderDependency {}
 
+#[cacheable_dyn]
 impl DependencyTemplate for RequireHeaderDependency {
   fn apply(
     &self,
@@ -53,17 +59,5 @@ impl DependencyTemplate for RequireHeaderDependency {
       RuntimeGlobals::REQUIRE.name(),
       None,
     );
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }

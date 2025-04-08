@@ -12,9 +12,7 @@ use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
 use rustc_hash::FxHashMap;
 
-use crate::common::FallbackCacheGroup;
-use crate::module_group::ModuleGroup;
-use crate::{CacheGroup, SplitChunkSizes};
+use crate::{common::FallbackCacheGroup, module_group::ModuleGroup, CacheGroup, SplitChunkSizes};
 
 type ModuleGroupMap = FxHashMap<String, ModuleGroup>;
 
@@ -42,14 +40,14 @@ impl SplitChunksPlugin {
     )
   }
 
-  fn inner_impl(&self, compilation: &mut Compilation) -> Result<()> {
+  async fn inner_impl(&self, compilation: &mut Compilation) -> Result<()> {
     let logger = compilation.get_logger(self.name());
     let start = logger.time("prepare module group map");
-    let mut module_group_map = self.prepare_module_group_map(compilation)?;
+    let mut module_group_map = self.prepare_module_group_map(compilation).await?;
     tracing::trace!("prepared module_group_map {:#?}", module_group_map);
     logger.time_end(start);
 
-    let start = logger.time("ensure min size fit");
+    let start: rspack_core::StartTime = logger.time("ensure min size fit");
     self.ensure_min_size_fit(compilation, &mut module_group_map);
     logger.time_end(start);
 
@@ -63,10 +61,10 @@ impl SplitChunksPlugin {
         module_group_key,
         module_group_map.len(),
       );
-      let process_span = tracing::trace_span!("Process ModuleGroup({})", module_group_key);
+      // let process_span = tracing::trace_span!("Process ModuleGroup");
 
-      process_span.in_scope(|| {
-        let cache_group = module_group.get_cache_group(&self.cache_groups);
+      // process_span.in_scope(|| {
+      let cache_group = module_group.get_cache_group(&self.cache_groups);
 
       let mut is_reuse_existing_chunk = false;
       let mut is_reuse_existing_chunk_with_all_modules = false;
@@ -111,7 +109,8 @@ impl SplitChunksPlugin {
         if used_chunks_len < cache_group.min_chunks as usize {
           // `min_size` is not satisfied, ignore this invalid `ModuleGroup`
           tracing::trace!("ModuleGroup({module_group_key}) is skipped. Reason: used_chunks_len({used_chunks_len:?}) < cache_group.min_chunks({:?})", cache_group.min_chunks);
-          return;
+          continue;
+          // return;
         }
       }
 
@@ -142,12 +141,14 @@ impl SplitChunksPlugin {
         &used_chunks,
         compilation,
       );
-      })
+      // })
     }
     logger.time_end(start);
 
     let start = logger.time("ensure max size fit");
-    self.ensure_max_size_fit(compilation, max_size_setting_map)?;
+    self
+      .ensure_max_size_fit(compilation, &max_size_setting_map)
+      .await?;
     logger.time_end(start);
 
     Ok(())
@@ -161,8 +162,8 @@ impl Debug for SplitChunksPlugin {
 }
 
 #[plugin_hook(CompilationOptimizeChunks for SplitChunksPlugin, stage = Compilation::OPTIMIZE_CHUNKS_STAGE_ADVANCED)]
-fn optimize_chunks(&self, compilation: &mut Compilation) -> Result<Option<bool>> {
-  self.inner_impl(compilation)?;
+async fn optimize_chunks(&self, compilation: &mut Compilation) -> Result<Option<bool>> {
+  self.inner_impl(compilation).await?;
   Ok(None)
 }
 

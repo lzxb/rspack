@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 
 use async_trait::async_trait;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   basic_function, block_promise, impl_module_meta_info, impl_source_map_config, module_raw,
   module_update_hash, returning_function,
-  rspack_sources::{RawSource, Source, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   throw_missing_module_error_block, AsyncDependenciesBlock, AsyncDependenciesBlockIdentifier,
   BoxDependency, BuildContext, BuildInfo, BuildMeta, BuildMetaExportsType, BuildResult,
   ChunkGroupOptions, CodeGenerationResult, Compilation, ConcatenationScope, Context,
@@ -13,7 +14,8 @@ use rspack_core::{
   ModuleDependency, ModuleIdentifier, ModuleType, RuntimeGlobals, RuntimeSpec, SourceType,
   StaticExportsDependency, StaticExportsSpec,
 };
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::source_map::SourceMapKind;
 use rustc_hash::FxHashSet;
 
@@ -23,6 +25,7 @@ use super::{
 use crate::utils::json_stringify;
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug)]
 pub struct ContainerEntryModule {
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
@@ -32,8 +35,8 @@ pub struct ContainerEntryModule {
   exposes: Vec<(String, ExposeOptions)>,
   share_scope: String,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
   enhanced: bool,
 }
 
@@ -57,8 +60,15 @@ impl ContainerEntryModule {
       exposes,
       share_scope,
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: BuildInfo {
+        strict: true,
+        top_level_declarations: Some(FxHashSet::default()),
+        ..Default::default()
+      },
+      build_meta: BuildMeta {
+        exports_type: BuildMetaExportsType::Namespace,
+        ..Default::default()
+      },
       source_map_kind: SourceMapKind::empty(),
       enhanced,
     }
@@ -93,6 +103,7 @@ impl DependenciesBlock for ContainerEntryModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait]
 impl Module for ContainerEntryModule {
   impl_module_meta_info!();
@@ -109,7 +120,7 @@ impl Module for ContainerEntryModule {
     &[SourceType::JavaScript, SourceType::Expose]
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -120,9 +131,7 @@ impl Module for ContainerEntryModule {
   fn lib_ident(&self, _options: LibIdentOptions) -> Option<Cow<str>> {
     Some(self.lib_ident.as_str().into())
   }
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
+
   async fn build(
     &mut self,
     _build_context: BuildContext,
@@ -158,23 +167,14 @@ impl Module for ContainerEntryModule {
     )));
 
     Ok(BuildResult {
-      build_info: BuildInfo {
-        strict: true,
-        top_level_declarations: Some(FxHashSet::default()),
-        ..Default::default()
-      },
-      build_meta: BuildMeta {
-        exports_type: BuildMetaExportsType::Namespace,
-        ..Default::default()
-      },
       dependencies,
       blocks,
       ..Default::default()
     })
   }
 
-  #[tracing::instrument(name = "ContainerEntryModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("ContainerEntryModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -260,8 +260,8 @@ var init = function(shareScope, initScope) {{
       )
     };
     code_generation_result =
-      code_generation_result.with_javascript(RawSource::from(source).boxed());
-    code_generation_result.add(SourceType::Expose, RawSource::from("").boxed());
+      code_generation_result.with_javascript(RawStringSource::from(source).boxed());
+    code_generation_result.add(SourceType::Expose, RawStringSource::from_static("").boxed());
     if self.enhanced {
       code_generation_result
         .data
@@ -273,14 +273,14 @@ var init = function(shareScope, initScope) {{
     Ok(code_generation_result)
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    module_update_hash(self, hasher, compilation, runtime);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

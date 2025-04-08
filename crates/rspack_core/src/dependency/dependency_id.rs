@@ -1,11 +1,9 @@
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
+use rspack_cacheable::cacheable;
 use serde::Serialize;
-use swc_core::ecma::atoms::Atom;
 
-use crate::ModuleGraph;
-
+#[cacheable(hashable)]
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 pub struct DependencyId(u32);
 
@@ -14,19 +12,6 @@ pub static DEPENDENCY_ID: AtomicU32 = AtomicU32::new(0);
 impl DependencyId {
   pub fn new() -> Self {
     Self(DEPENDENCY_ID.fetch_add(1, Relaxed))
-  }
-
-  pub fn set_ids(&self, ids: Vec<Atom>, mg: &mut ModuleGraph) {
-    mg.set_dep_meta(*self, ids);
-  }
-
-  /// # Panic
-  /// This method will panic if one of following condition is true:
-  /// * current dependency id is not belongs to `ESMImportSpecifierDependency` or  `ESMExportImportedSpecifierDependency`
-  /// * current id is not in `ModuleGraph`
-  pub fn get_ids(&self, mg: &ModuleGraph) -> Vec<Atom> {
-    let dep = mg.dependency_by_id(self).expect("should have dep");
-    dep.get_ids(mg)
   }
 }
 

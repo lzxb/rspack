@@ -1,5 +1,4 @@
-use std::borrow::Cow;
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use regex::Regex;
 use rspack_paths::Utf8Path;
@@ -43,7 +42,7 @@ pub fn stringify_loaders_and_resource<'a>(
       .map(|i| &*i.loader)
       .collect::<Vec<_>>()
       .join("!");
-    Cow::Owned(format!("{s}!{}", resource))
+    Cow::Owned(format!("{s}!{resource}"))
   } else {
     Cow::Borrowed(resource)
   }

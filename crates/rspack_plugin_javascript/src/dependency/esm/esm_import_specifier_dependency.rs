@@ -1,38 +1,52 @@
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsOption, AsPreset, AsVec, Skip},
+};
 use rspack_collections::IdentifierSet;
 use rspack_core::{
   create_exports_object_referenced, export_from_import, get_dependency_used_by_exports_condition,
-  get_exports_type, AsContextDependency, Compilation, ConnectionState, Dependency,
-  DependencyCategory, DependencyCondition, DependencyId, DependencyRange, DependencyTemplate,
-  DependencyType, ExportPresenceMode, ExportsType, ExtendedReferencedExport, ImportAttributes,
-  JavascriptParserOptions, ModuleDependency, ModuleGraph, ReferencedExport, RuntimeSpec,
-  TemplateContext, TemplateReplaceSource, UsedByExports,
+  get_exports_type, property_access, AsContextDependency, ConnectionState, Dependency,
+  DependencyCategory, DependencyCondition, DependencyId, DependencyLocation, DependencyRange,
+  DependencyTemplate, DependencyType, ExportPresenceMode, ExportsType, ExtendedReferencedExport,
+  FactorizeInfo, ImportAttributes, JavascriptParserOptions, ModuleDependency, ModuleGraph,
+  ModuleReferenceOptions, ReferencedExport, RuntimeSpec, SharedSourceMap, TemplateContext,
+  TemplateReplaceSource, UsedByExports,
 };
-use rspack_core::{property_access, ModuleReferenceOptions};
 use rspack_error::Diagnostic;
 use rustc_hash::FxHashSet as HashSet;
 use swc_core::ecma::atoms::Atom;
 
-use super::esm_import_dependency::esm_import_dependency_get_linking_error;
-use super::{create_resource_identifier_for_esm_dependency, esm_import_dependency_apply};
+use super::{
+  create_resource_identifier_for_esm_dependency,
+  esm_import_dependency::esm_import_dependency_get_linking_error, esm_import_dependency_apply,
+};
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMImportSpecifierDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
+  #[cacheable(with=AsPreset)]
   name: Atom,
   source_order: i32,
   shorthand: bool,
   asi_safe: bool,
   range: DependencyRange,
+  #[cacheable(with=AsVec<AsPreset>)]
   ids: Vec<Atom>,
   call: bool,
   direct_import: bool,
   used_by_exports: Option<UsedByExports>,
+  #[cacheable(with=AsOption<AsVec<AsPreset>>)]
   referenced_properties_in_destructuring: Option<HashSet<Atom>>,
   resource_identifier: String,
   export_presence_mode: ExportPresenceMode,
   attributes: Option<ImportAttributes>,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
   pub namespace_object_as_context: bool,
+  factorize_info: FactorizeInfo,
 }
 
 impl ESMImportSpecifierDependency {
@@ -50,6 +64,7 @@ impl ESMImportSpecifierDependency {
     export_presence_mode: ExportPresenceMode,
     referenced_properties_in_destructuring: Option<HashSet<Atom>>,
     attributes: Option<ImportAttributes>,
+    source_map: Option<SharedSourceMap>,
   ) -> Self {
     let resource_identifier =
       create_resource_identifier_for_esm_dependency(&request, attributes.as_ref());
@@ -70,19 +85,27 @@ impl ESMImportSpecifierDependency {
       referenced_properties_in_destructuring,
       attributes,
       resource_identifier,
+      source_map,
+      factorize_info: Default::default(),
     }
+  }
+
+  pub fn get_ids<'a>(&'a self, mg: &'a ModuleGraph) -> &'a [Atom] {
+    mg.get_dep_meta_if_existing(&self.id)
+      .map(|meta| meta.ids.as_slice())
+      .unwrap_or_else(|| self.ids.as_slice())
   }
 
   pub fn get_referenced_exports_in_destructuring(
     &self,
-    ids: Option<&Vec<Atom>>,
+    ids: Option<&[Atom]>,
   ) -> Vec<ExtendedReferencedExport> {
     if let Some(referenced_properties) = &self.referenced_properties_in_destructuring {
       referenced_properties
         .iter()
         .map(|prop| {
           if let Some(v) = ids {
-            let mut value = v.clone();
+            let mut value = v.to_vec();
             value.push(prop.clone());
             ReferencedExport::new(value, false)
           } else {
@@ -92,7 +115,7 @@ impl ESMImportSpecifierDependency {
         .map(ExtendedReferencedExport::Export)
         .collect::<Vec<_>>()
     } else if let Some(v) = ids {
-      vec![ExtendedReferencedExport::Array(v.clone())]
+      vec![ExtendedReferencedExport::Array(v.to_vec())]
     } else {
       create_exports_object_referenced()
     }
@@ -110,6 +133,7 @@ impl ESMImportSpecifierDependency {
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMImportSpecifierDependency {
   fn apply(
     &self,
@@ -177,7 +201,7 @@ impl DependencyTemplate for ESMImportSpecifierDependency {
           con.module_identifier(),
           &ModuleReferenceOptions {
             asi_safe: Some(self.asi_safe),
-            ids,
+            ids: ids.to_vec(),
             call: self.call,
             direct_import: self.direct_import,
             ..Default::default()
@@ -205,27 +229,16 @@ impl DependencyTemplate for ESMImportSpecifierDependency {
       source.replace(self.range.start, self.range.end, export_expr.as_str(), None);
     }
   }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
-  }
 }
 
+#[cacheable_dyn]
 impl Dependency for ESMImportSpecifierDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn range(&self) -> Option<&DependencyRange> {
@@ -260,17 +273,15 @@ impl Dependency for ESMImportSpecifierDependency {
     ConnectionState::Bool(false)
   }
 
-  fn get_ids(&self, mg: &ModuleGraph) -> Vec<Atom> {
-    mg.get_dep_meta_if_existing(&self.id)
-      .map(|meta| meta.ids.clone())
-      .unwrap_or_else(|| self.ids.clone())
+  fn _get_ids<'a>(&'a self, mg: &'a ModuleGraph) -> &'a [Atom] {
+    self.get_ids(mg)
   }
 
   fn resource_identifier(&self) -> Option<&str> {
     Some(&self.resource_identifier)
   }
 
-  #[tracing::instrument(skip_all)]
+  // #[tracing::instrument(skip_all)]
   fn get_diagnostics(&self, module_graph: &ModuleGraph) -> Option<Vec<Diagnostic>> {
     let module = module_graph.get_parent_module(&self.id)?;
     let module = module_graph.module_by_identifier(module)?;
@@ -279,7 +290,7 @@ impl Dependency for ESMImportSpecifierDependency {
       .get_effective_export_presence(&**module)
       && let Some(diagnostic) = esm_import_dependency_get_linking_error(
         self,
-        &self.get_ids(module_graph)[..],
+        self.get_ids(module_graph),
         module_graph,
         format!("(imported as '{}')", self.name),
         should_error,
@@ -314,7 +325,7 @@ impl Dependency for ESMImportSpecifierDependency {
           if ids.len() == 1 {
             return self.get_referenced_exports_in_destructuring(None);
           }
-          ids.drain(0..1);
+          ids = &ids[1..];
           namespace_object_as_context = true;
         }
         ExportsType::Dynamic => {
@@ -329,9 +340,9 @@ impl Dependency for ESMImportSpecifierDependency {
         return create_exports_object_referenced();
       }
       // remove last one
-      ids.remove(ids.len() - 1);
+      ids = &ids[..ids.len() - 1];
     }
-    self.get_referenced_exports_in_destructuring(Some(&ids))
+    self.get_referenced_exports_in_destructuring(Some(ids))
   }
 
   fn could_affect_referencing_module(&self) -> rspack_core::AffectType {
@@ -339,6 +350,7 @@ impl Dependency for ESMImportSpecifierDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ESMImportSpecifierDependency {
   fn request(&self) -> &str {
     &self.request
@@ -355,6 +367,14 @@ impl ModuleDependency for ESMImportSpecifierDependency {
   fn get_condition(&self) -> Option<DependencyCondition> {
     // TODO: this part depend on inner graph parser plugin to call set_used_by_exports to update the used_by_exports
     get_dependency_used_by_exports_condition(self.id, self.used_by_exports.as_ref())
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 

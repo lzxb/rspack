@@ -2,21 +2,26 @@ use rspack_core::{
   BuildMetaDefaultObject, BuildMetaExportsType, DependencyRange, RuntimeGlobals,
   RuntimeRequirementsDependency, SpanExt,
 };
-use swc_core::atoms::Atom;
-use swc_core::common::Spanned;
-use swc_core::ecma::ast::{
-  AssignExpr, AssignTarget, CallExpr, PropOrSpread, SimpleAssignTarget, UnaryExpr,
+use swc_core::{
+  atoms::Atom,
+  common::Spanned,
+  ecma::ast::{
+    AssignExpr, AssignTarget, CallExpr, Callee, Expr, ExprOrSpread, Ident, Lit, MemberExpr,
+    ObjectLit, Prop, PropName, PropOrSpread, SimpleAssignTarget, ThisExpr, UnaryExpr, UnaryOp,
+  },
 };
-use swc_core::ecma::ast::{Callee, ExprOrSpread, Ident, MemberExpr, ObjectLit};
-use swc_core::ecma::ast::{Expr, Lit, Prop, PropName, ThisExpr, UnaryOp};
 
 use super::JavascriptParserPlugin;
-use crate::dependency::{CommonJsExportRequireDependency, CommonJsExportsDependency};
-use crate::dependency::{CommonJsSelfReferenceDependency, ExportsBase, ModuleDecoratorDependency};
-use crate::utils::eval::{self, BasicEvaluatedExpression};
-use crate::visitors::expr_like::ExprLike;
-use crate::visitors::{
-  expr_matcher, AllowedMemberTypes, JavascriptParser, MemberExpressionInfo, TopLevelScope,
+use crate::{
+  dependency::{
+    CommonJsExportRequireDependency, CommonJsExportsDependency, CommonJsSelfReferenceDependency,
+    ExportsBase, ModuleDecoratorDependency,
+  },
+  utils::eval::{self, BasicEvaluatedExpression},
+  visitors::{
+    expr_like::ExprLike, expr_matcher, AllowedMemberTypes, JavascriptParser, MemberExpressionInfo,
+    TopLevelScope,
+  },
 };
 
 const MODULE_NAME: &str = "module";
@@ -120,7 +125,7 @@ fn is_lit_truthy_literal(lit: &Lit) -> bool {
   }
 }
 
-impl<'parser> JavascriptParser<'parser> {
+impl JavascriptParser<'_> {
   fn is_exports_member_expr_start<E: ExprLike>(&mut self, expr: &E) -> bool {
     fn walk_each<E: ExprLike>(parser: &mut JavascriptParser, expr: &E) -> bool {
       if parser.is_exports_expr(expr) {
@@ -139,15 +144,15 @@ impl<'parser> JavascriptParser<'parser> {
   }
 
   fn is_exports_ident<E: ExprLike>(&mut self, expr: &E) -> bool {
-    expr.as_ident().map_or(false, |ident| {
-      ident.sym == EXPORTS_NAME && self.is_unresolved_ident(EXPORTS_NAME)
-    })
+    expr
+      .as_ident()
+      .is_some_and(|ident| ident.sym == EXPORTS_NAME && self.is_unresolved_ident(EXPORTS_NAME))
   }
 
   fn is_exports_expr<E: ExprLike>(&mut self, expr: &E) -> bool {
     expr
       .as_ident()
-      .map_or(false, |ident| self.is_exports_ident(ident))
+      .is_some_and(|ident| self.is_exports_ident(ident))
   }
 
   fn is_top_level_this(&self, _expr: &ThisExpr) -> bool {
@@ -155,7 +160,7 @@ impl<'parser> JavascriptParser<'parser> {
   }
 
   fn is_top_level_this_expr<E: ExprLike>(&self, expr: &E) -> bool {
-    expr.as_this().map_or(false, |e| self.is_top_level_this(e))
+    expr.as_this().is_some_and(|e| self.is_top_level_this(e))
   }
 
   fn is_exports_or_module_exports_or_this_expr(&mut self, expr: &Expr) -> bool {

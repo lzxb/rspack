@@ -33,13 +33,13 @@ module.exports = {
 		+             },
 		+           },
 		+         ],
-		+         "test": //.wasm$/i,
+		+         "test": /\\.wasm$/i,
 		+         "type": "webassembly/async",
-		+       },
+		@@ ... @@
 		+       Object {
 		+         "mimetype": "application/wasm",
 		+         "rules": Array [
-		+           Object {
+		@@ ... @@
 		+             "descriptionData": Object {
 		+               "type": "module",
 		+             },
@@ -49,5 +49,10 @@ module.exports = {
 		+           },
 		+         ],
 		+         "type": "webassembly/async",
+		+       },
+		+       Object {
+		@@ ... @@
+		-     "charset": true,
+		+     "charset": false,
 	`)
 };

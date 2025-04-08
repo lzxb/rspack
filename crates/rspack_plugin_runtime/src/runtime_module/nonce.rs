@@ -1,7 +1,7 @@
 use rspack_collections::Identifier;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   Compilation, RuntimeGlobals, RuntimeModule,
 };
 
@@ -17,12 +17,13 @@ impl Default for NonceRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for NonceRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
   }
 
-  fn generate(&self, _: &Compilation) -> rspack_error::Result<BoxSource> {
-    Ok(RawSource::from(format!("{} = undefined;", RuntimeGlobals::SCRIPT_NONCE)).boxed())
+  async fn generate(&self, _: &Compilation) -> rspack_error::Result<BoxSource> {
+    Ok(RawStringSource::from(format!("{} = undefined;", RuntimeGlobals::SCRIPT_NONCE)).boxed())
   }
 }

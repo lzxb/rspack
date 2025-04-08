@@ -1,15 +1,11 @@
 import {
 	BuiltinPluginName,
+	EntryDependency,
 	type JsEntryOptions,
 	type JsEntryPluginOptions
 } from "@rspack/binding";
 
-import {
-	type EntryDescriptionNormalized,
-	getRawChunkLoading,
-	getRawLibrary
-} from "../config";
-import { isNil } from "../util";
+import type { EntryDescriptionNormalized } from "../config";
 import { create } from "./base";
 
 /**
@@ -28,7 +24,7 @@ export type EntryOptions = Omit<EntryDescriptionNormalized, "import"> & {
  * contains only one module (plus dependencies). The module is resolved from
  * `entry` in `context` (absolute path).
  */
-export const EntryPlugin = create(
+const OriginEntryPlugin = create(
 	BuiltinPluginName.EntryPlugin,
 	(
 		context: string,
@@ -46,6 +42,14 @@ export const EntryPlugin = create(
 	"make"
 );
 
+type EntryPluginType = typeof OriginEntryPlugin & {
+	createDependency(entry: string): EntryDependency;
+};
+
+export const EntryPlugin = OriginEntryPlugin as EntryPluginType;
+
+EntryPlugin.createDependency = request => new EntryDependency(request);
+
 export function getRawEntryOptions(entry: EntryOptions): JsEntryOptions {
 	const runtime = entry.runtime;
 	const chunkLoading = entry.chunkLoading;
@@ -54,12 +58,10 @@ export function getRawEntryOptions(entry: EntryOptions): JsEntryOptions {
 		publicPath: entry.publicPath,
 		baseUri: entry.baseUri,
 		runtime,
-		chunkLoading: !isNil(chunkLoading)
-			? getRawChunkLoading(chunkLoading)
-			: undefined,
+		chunkLoading,
 		asyncChunks: entry.asyncChunks,
 		filename: entry.filename,
-		library: entry.library && getRawLibrary(entry.library),
+		library: entry.library,
 		layer: entry.layer ?? undefined,
 		dependOn: entry.dependOn
 	};

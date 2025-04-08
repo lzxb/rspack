@@ -4,7 +4,7 @@ edition     = "2021"
 license     = "MIT"
 name        = "rspack_benchmark"
 repository  = "https://github.com/web-infra-dev/rspack"
-version     = "0.1.0"
+version     = "0.2.0"
 publish = false
 
 [features]
@@ -12,8 +12,13 @@ default = []
 codspeed = ["criterion2/codspeed"]
 
 [dependencies]
-criterion2 = { default-features = false, version = "2.0.0"}
+criterion2 = { default-features = false, version = "2.0.0", features = ["async_tokio"]}
+rspack = { workspace = true }
+rspack_fs = { workspace = true }
+rspack_core = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
 
 [[bench]]
-name    = "basic"
+name    = "benches"
 harness = false

@@ -1,25 +1,23 @@
-use std::any::Any;
-use std::borrow::Cow;
-use std::fmt::Debug;
+use std::{any::Any, borrow::Cow};
 
-use derivative::Derivative;
+use derive_more::Debug;
+use rspack_cacheable::cacheable_dyn;
 use rspack_error::{Result, TWithDiagnosticArray};
+use rspack_hash::RspackHashDigest;
 use rspack_loader_runner::{AdditionalData, ResourceData};
 use rspack_sources::BoxSource;
-use rspack_util::ext::AsAny;
-use rspack_util::source_map::SourceMapKind;
+use rspack_util::{ext::AsAny, source_map::SourceMapKind};
 use rustc_hash::FxHashMap;
 use swc_core::common::Span;
 
 use crate::{
-  AsyncDependenciesBlock, BoxDependency, BoxLoader, BuildInfo, BuildMeta, CodeGenerationData,
-  Compilation, CompilerOptions, DependencyTemplate, Module, ModuleDependency, ModuleIdentifier,
-  ModuleLayer, ModuleType, NormalModule, ParserOptions, RuntimeGlobals, RuntimeSpec, SourceType,
+  AsyncDependenciesBlock, BoxDependency, BoxDependencyTemplate, BoxLoader, BoxModuleDependency,
+  BuildInfo, BuildMeta, ChunkGraph, CodeGenerationData, Compilation, CompilerOptions,
+  ConcatenationScope, Context, Module, ModuleGraph, ModuleIdentifier, ModuleLayer, ModuleType,
+  NormalModule, ParserOptions, RuntimeGlobals, RuntimeSpec, SourceType,
 };
-use crate::{ChunkGraph, ConcatenationScope, Context, ModuleGraph};
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct ParseContext<'a> {
   pub source: BoxSource,
   pub module_context: &'a Context,
@@ -29,7 +27,7 @@ pub struct ParseContext<'a> {
   pub module_user_request: &'a str,
   pub module_parser_options: Option<&'a ParserOptions>,
   pub module_source_map_kind: SourceMapKind,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub loaders: &'a [BoxLoader],
   pub resource_data: &'a ResourceData,
   pub compiler_options: &'a CompilerOptions,
@@ -69,8 +67,8 @@ impl SideEffectsBailoutItemWithSpan {
 pub struct ParseResult {
   pub dependencies: Vec<BoxDependency>,
   pub blocks: Vec<Box<AsyncDependenciesBlock>>,
-  pub presentational_dependencies: Vec<Box<dyn DependencyTemplate>>,
-  pub code_generation_dependencies: Vec<Box<dyn ModuleDependency>>,
+  pub presentational_dependencies: Vec<BoxDependencyTemplate>,
+  pub code_generation_dependencies: Vec<BoxModuleDependency>,
   pub source: BoxSource,
   pub side_effects_bailout: Option<SideEffectsBailoutItem>,
 }
@@ -85,15 +83,20 @@ pub struct GenerateContext<'a> {
   pub concatenation_scope: Option<&'a mut ConcatenationScope>,
 }
 
+#[cacheable_dyn]
+#[async_trait::async_trait]
 pub trait ParserAndGenerator: Send + Sync + Debug + AsAny {
   /// The source types that the generator can generate (the source types you can make requests for)
   fn source_types(&self) -> &[SourceType];
   /// Parse the source and return the dependencies and the ast or source
-  fn parse(&mut self, parse_context: ParseContext) -> Result<TWithDiagnosticArray<ParseResult>>;
+  async fn parse<'a>(
+    &mut self,
+    parse_context: ParseContext<'a>,
+  ) -> Result<TWithDiagnosticArray<ParseResult>>;
   /// Size of the original source
   fn size(&self, module: &dyn Module, source_type: Option<&SourceType>) -> f64;
   /// Generate source or AST based on the built source or AST
-  fn generate(
+  async fn generate(
     &self,
     source: &BoxSource,
     module: &dyn Module,
@@ -107,14 +110,16 @@ pub trait ParserAndGenerator: Send + Sync + Debug + AsAny {
     _cg: &ChunkGraph,
   ) -> Option<Cow<'static, str>>;
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
     _module: &NormalModule,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
+    compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    Ok(RspackHashDigest::new(
+      vec![],
+      &compilation.options.output.hash_digest,
+    ))
   }
 }
 

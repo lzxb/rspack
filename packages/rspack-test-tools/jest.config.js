@@ -24,15 +24,25 @@ const config = {
 		// disable sourcmap remapping for ts file
 		"source-map-support/register": "identity-obj-proxy"
 	},
-	cache: false,
+	cache: !process.env.CI,
 	transformIgnorePatterns: [root],
+	maxWorkers: "80%",
 	snapshotFormat: {
 		escapeString: true,
 		printBasicPrototype: true
 	},
 	globals: {
 		updateSnapshot:
-			process.argv.includes("-u") || process.argv.includes("--updateSnapshot")
+			process.argv.includes("-u") || process.argv.includes("--updateSnapshot"),
+		testFilter:
+			process.argv.includes("--test") || process.argv.includes("-t")
+				? process.argv[
+						(process.argv.includes("-t")
+							? process.argv.indexOf("-t")
+							: process.argv.indexOf("--test")) + 1
+					]
+				: undefined,
+		printLogger: process.argv.includes("--verbose")
 	}
 };
 

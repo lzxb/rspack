@@ -1,32 +1,39 @@
-use std::borrow::Cow;
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use itertools::Itertools;
-use rspack_core::diagnostics::map_box_diagnostics_to_module_parse_diagnostics;
-use rspack_core::rspack_sources::{BoxSource, ReplaceSource, Source, SourceExt};
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
 use rspack_core::{
-  render_init_fragments, AsyncDependenciesBlockIdentifier, BuildMetaExportsType, ChunkGraph,
-  Compilation, DependenciesBlock, DependencyId, GenerateContext, Module, ModuleGraph, ModuleType,
-  ParseContext, ParseResult, ParserAndGenerator, SideEffectsBailoutItem, SourceType, SpanExt,
+  diagnostics::map_box_diagnostics_to_module_parse_diagnostics,
+  remove_bom, render_init_fragments,
+  rspack_sources::{BoxSource, ReplaceSource, Source, SourceExt},
+  AsyncDependenciesBlockIdentifier, BuildMetaExportsType, ChunkGraph, Compilation,
+  DependenciesBlock, DependencyId, DependencyRange, GenerateContext, Module, ModuleGraph,
+  ModuleType, ParseContext, ParseResult, ParserAndGenerator, SideEffectsBailoutItem, SourceType,
   TemplateContext, TemplateReplaceSource,
 };
-use rspack_error::miette::Diagnostic;
-use rspack_error::{DiagnosticExt, IntoTWithDiagnosticArray, Result, TWithDiagnosticArray};
-use rspack_util::itoa;
-use swc_core::common::comments::Comments;
-use swc_core::common::input::SourceFileInput;
-use swc_core::common::{FileName, Span, SyntaxContext};
-use swc_core::ecma::ast;
-use swc_core::ecma::parser::{lexer::Lexer, EsSyntax, Syntax};
+use rspack_error::{
+  miette::Diagnostic, DiagnosticExt, IntoTWithDiagnosticArray, Result, TWithDiagnosticArray,
+};
+use swc_core::{
+  common::{comments::Comments, input::SourceFileInput, FileName, SyntaxContext},
+  ecma::{
+    ast,
+    parser::{lexer::Lexer, EsSyntax, Syntax},
+  },
+};
 use swc_node_comments::SwcComments;
 
-use crate::dependency::ESMCompatibilityDependency;
-use crate::visitors::{scan_dependencies, swc_visitor::resolver};
-use crate::visitors::{semicolon, ScanDependenciesResult};
-use crate::{BoxJavascriptParserPlugin, SideEffectsFlagPluginVisitor, SyntaxContextInfo};
+use crate::{
+  dependency::ESMCompatibilityDependency,
+  visitors::{scan_dependencies, semicolon, swc_visitor::resolver, ScanDependenciesResult},
+  BoxJavascriptParserPlugin, SideEffectsFlagPluginVisitor, SyntaxContextInfo,
+};
 
+#[cacheable]
 #[derive(Default)]
 pub struct JavaScriptParserAndGenerator {
+  // TODO
+  #[cacheable(with=Skip)]
   parser_plugins: Vec<BoxJavascriptParserPlugin>,
 }
 
@@ -77,23 +84,33 @@ impl JavaScriptParserAndGenerator {
       .expect("should have dependency")
       .as_dependency_template()
     {
-      dependency.apply(source, context)
+      if let Some(template) = compilation.get_dependency_template(dependency) {
+        template.render(dependency, source, context)
+      } else {
+        dependency.apply(source, context)
+      }
     }
   }
 }
 
 static SOURCE_TYPES: &[SourceType; 1] = &[SourceType::JavaScript];
 
+#[cacheable_dyn]
+#[async_trait::async_trait]
 impl ParserAndGenerator for JavaScriptParserAndGenerator {
   fn source_types(&self) -> &[SourceType] {
     SOURCE_TYPES
   }
 
   fn size(&self, module: &dyn Module, _source_type: Option<&SourceType>) -> f64 {
-    module.original_source().map_or(0, |source| source.size()) as f64
+    module.source().map_or(0, |source| source.size()) as f64
   }
 
-  fn parse(&mut self, parse_context: ParseContext) -> Result<TWithDiagnosticArray<ParseResult>> {
+  #[tracing::instrument("JavaScriptParser:parse", skip_all)]
+  async fn parse<'a>(
+    &mut self,
+    parse_context: ParseContext<'a>,
+  ) -> Result<TWithDiagnosticArray<ParseResult>> {
     let ParseContext {
       source,
       module_type,
@@ -235,38 +252,14 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
           .side_effects_item
           .take()
           .and_then(|item| -> Option<_> {
-            let msg = span_to_location(item.span, &source.source())?;
+            let source = source.source();
+            let msg = Into::<DependencyRange>::into(item.span)
+              .to_loc(Some(source.as_ref()))?
+              .to_string();
             Some(SideEffectsBailoutItem { msg, ty: item.ty })
           })
       });
     }
-
-    // let inner_graph = if compiler_options.optimization.inner_graph {
-    //   ast.transform(|program, context| {
-    //     let unresolved_ctxt = SyntaxContext::empty().apply_mark(context.unresolved_mark);
-    //     let top_level_ctxt = SyntaxContext::empty().apply_mark(context.top_level_mark);
-    //     let mut plugin = InnerGraphPlugin::new(
-    //       &mut dependencies,
-    //       unresolved_ctxt,
-    //       top_level_ctxt,
-    //       &mut usage_span_record,
-    //       &import_map,
-    //       module_identifier,
-    //       program.comments.take(),
-    //       &path_ignored_spans,
-    //     );
-    //     plugin.enable();
-    //     // program.visit_with(&mut plugin);
-    //     program.comments = plugin.comments.take();
-    //     Some(plugin)
-    //   })
-    // } else {
-    //   None
-    // };
-
-    // if let Some(mut inner_graph) = inner_graph {
-    //   inner_graph.infer_dependency_usage();
-    // }
 
     Ok(
       ParseResult {
@@ -284,7 +277,7 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
     )
   }
 
-  fn generate(
+  async fn generate(
     &self,
     source: &BoxSource,
     module: &dyn Module,
@@ -312,9 +305,13 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
       });
 
       if let Some(dependencies) = module.get_presentational_dependencies() {
-        dependencies
-          .iter()
-          .for_each(|dependency| dependency.apply(&mut source, &mut context));
+        dependencies.iter().for_each(|dependency| {
+          if let Some(template) = compilation.get_dependency_template(dependency.as_ref()) {
+            template.render(dependency.as_ref(), &mut source, &mut context)
+          } else {
+            dependency.apply(&mut source, &mut context)
+          }
+        });
       };
 
       module
@@ -338,12 +335,7 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
     _cg: &ChunkGraph,
   ) -> Option<Cow<'static, str>> {
     // Only ES modules are valid for optimization
-    if module.build_meta().is_none()
-      || module
-        .build_meta()
-        .map(|meta| meta.exports_type != BuildMetaExportsType::Namespace)
-        .unwrap_or_default()
-    {
+    if module.build_meta().exports_type != BuildMetaExportsType::Namespace {
       return Some("Module is not an ECMAScript module".into());
     }
 
@@ -361,51 +353,9 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
       return Some("Module is not an ECMAScript module".into());
     }
 
-    if let Some(info) = module.build_info()
-      && let Some(bailout) = info.module_concatenation_bailout.as_deref()
-    {
+    if let Some(bailout) = module.build_info().module_concatenation_bailout.as_deref() {
       return Some(format!("Module uses {bailout}").into());
     }
     None
-  }
-}
-
-// Todo(shulaoda): check if this can be removed
-fn span_to_location(span: Span, source: &str) -> Option<String> {
-  let r = ropey::Rope::from_str(source);
-  let start = span.real_lo();
-  let end = span.real_hi();
-  let start_char_offset = r.try_byte_to_char(start as usize).ok()?;
-  let start_line = r.char_to_line(start_char_offset);
-  let start_column = start_char_offset - r.line_to_char(start_line);
-
-  let end_char_offset = r.try_byte_to_char(end as usize).ok()?;
-  let end_line = r.char_to_line(end_char_offset);
-  let end_column = end_char_offset - r.line_to_char(end_line);
-  if start_line == end_line {
-    Some(format!(
-      "{}:{}-{}",
-      itoa!(start_line + 1),
-      itoa!(start_column),
-      itoa!(end_column)
-    ))
-  } else {
-    Some(format!(
-      "{}:{}-{}:{}",
-      itoa!(start_line + 1),
-      itoa!(start_column),
-      itoa!(end_line + 1),
-      itoa!(end_column)
-    ))
-  }
-}
-
-fn remove_bom(s: Arc<dyn Source>) -> Arc<dyn Source> {
-  if s.source().starts_with('\u{feff}') {
-    let mut s = ReplaceSource::new(s);
-    s.replace(0, 3, "", None);
-    s.boxed()
-  } else {
-    s
   }
 }

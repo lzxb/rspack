@@ -2,6 +2,7 @@
 
 mod compiler;
 mod options;
+mod plugin;
 mod transformer;
 
 use std::default::Default;
@@ -9,18 +10,24 @@ use std::default::Default;
 use compiler::{IntoJsAst, SwcCompiler};
 use options::SwcCompilerOptionsWithAdditional;
 pub use options::SwcLoaderJsOptions;
+pub use plugin::SwcLoaderPlugin;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{Mode, RunnerContext};
-use rspack_error::{error, AnyhowError, Diagnostic, Result};
+use rspack_error::{AnyhowResultToRspackResultExt, Diagnostic, Result};
 use rspack_loader_runner::{Identifiable, Identifier, Loader, LoaderContext};
-use rspack_plugin_javascript::ast::{self, SourceMapConfig};
-use rspack_plugin_javascript::TransformOutput;
+use rspack_plugin_javascript::{
+  ast::{self, SourceMapConfig},
+  TransformOutput,
+};
 use rspack_util::source_map::SourceMapKind;
 use swc_config::{config_types::MergingOption, merge::Merge};
-use swc_core::base::config::SourceMapsConfig;
-use swc_core::base::config::{InputSourceMap, OutputCharset, TransformConfig};
-use swc_core::ecma::visit::VisitWith;
+use swc_core::{
+  base::config::{InputSourceMap, OutputCharset, SourceMapsConfig, TransformConfig},
+  ecma::visit::VisitWith,
+};
 use transformer::IdentCollector;
 
+#[cacheable]
 #[derive(Debug)]
 pub struct SwcLoader {
   identifier: Identifier,
@@ -28,11 +35,11 @@ pub struct SwcLoader {
 }
 
 impl SwcLoader {
-  pub fn new(options: SwcLoaderJsOptions) -> Self {
-    Self {
+  pub fn new(raw_options: &str) -> Result<Self, serde_json::Error> {
+    Ok(Self {
       identifier: SWC_LOADER_IDENTIFIER.into(),
-      options_with_additional: options.into(),
-    }
+      options_with_additional: raw_options.try_into()?,
+    })
   }
 
   /// Panics:
@@ -88,17 +95,17 @@ impl SwcLoader {
 
     let source = content.into_string_lossy();
     let c = SwcCompiler::new(resource_path.into_std_path_buf(), source, swc_options)
-      .map_err(AnyhowError::from)?;
+      .to_rspack_result_from_anyhow()?;
 
     let built = c
       .parse(None, |_| {
         transformer::transform(&self.options_with_additional.rspack_experiments)
       })
-      .map_err(AnyhowError::from)?;
+      .to_rspack_result_from_anyhow()?;
 
     let input_source_map = c
       .input_source_map(&built.input_source_map)
-      .map_err(|e| error!(e.to_string()))?;
+      .to_rspack_result_from_anyhow()?;
     let mut codegen_options = ast::CodegenOptions {
       target: Some(built.target),
       minify: Some(built.minify),
@@ -118,7 +125,7 @@ impl SwcLoader {
       keep_comments: Some(true),
     };
 
-    let program = c.transform(built).map_err(AnyhowError::from)?;
+    let program = c.transform(built)?;
     if source_map_kind.enabled() {
       let mut v = IdentCollector {
         names: Default::default(),
@@ -136,12 +143,14 @@ impl SwcLoader {
 
 pub const SWC_LOADER_IDENTIFIER: &str = "builtin:swc-loader";
 
+#[cacheable_dyn]
 #[async_trait::async_trait]
 impl Loader<RunnerContext> for SwcLoader {
+  #[tracing::instrument("SwcLoader:run", skip_all)]
   async fn run(&self, loader_context: &mut LoaderContext<RunnerContext>) -> Result<()> {
     #[allow(unused_mut)]
     let mut inner = || self.loader_impl(loader_context);
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, not(target_family = "wasm")))]
     {
       // Adjust stack to avoid stack overflow.
       stacker::maybe_grow(
@@ -150,7 +159,7 @@ impl Loader<RunnerContext> for SwcLoader {
         inner,
       )
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(any(not(debug_assertions), target_family = "wasm"))]
     inner()
   }
 }

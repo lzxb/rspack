@@ -1,22 +1,25 @@
 use std::borrow::Cow;
 
 use async_trait::async_trait;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   impl_module_meta_info, impl_source_map_config, module_update_hash,
-  rspack_sources::{RawSource, Source, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   AsyncDependenciesBlockIdentifier, BoxDependency, BuildContext, BuildInfo, BuildMeta, BuildResult,
-  ChunkUkey, CodeGenerationResult, Compilation, ConcatenationScope, Context, DependenciesBlock,
-  DependencyId, FactoryMeta, LibIdentOptions, Module, ModuleIdentifier, ModuleType, RuntimeGlobals,
-  RuntimeSpec, SourceType,
+  ChunkGraph, ChunkUkey, CodeGenerationResult, Compilation, ConcatenationScope, Context,
+  DependenciesBlock, DependencyId, FactoryMeta, LibIdentOptions, Module, ModuleIdentifier,
+  ModuleType, RuntimeGlobals, RuntimeSpec, SourceType,
 };
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::{itoa, source_map::SourceMapKind};
 
 use super::fallback_item_dependency::FallbackItemDependency;
 use crate::utils::json_stringify;
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug)]
 pub struct FallbackModule {
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
@@ -26,8 +29,8 @@ pub struct FallbackModule {
   lib_ident: String,
   requests: Vec<String>,
   factory_meta: Option<FactoryMeta>,
-  build_info: Option<BuildInfo>,
-  build_meta: Option<BuildMeta>,
+  build_info: BuildInfo,
+  build_meta: BuildMeta,
 }
 
 impl FallbackModule {
@@ -48,8 +51,11 @@ impl FallbackModule {
       lib_ident,
       requests,
       factory_meta: None,
-      build_info: None,
-      build_meta: None,
+      build_info: BuildInfo {
+        strict: true,
+        ..Default::default()
+      },
+      build_meta: Default::default(),
       source_map_kind: SourceMapKind::empty(),
     }
   }
@@ -83,6 +89,7 @@ impl DependenciesBlock for FallbackModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait]
 impl Module for FallbackModule {
   impl_module_meta_info!();
@@ -95,15 +102,11 @@ impl Module for FallbackModule {
     &ModuleType::Fallback
   }
 
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-
   fn source_types(&self) -> &[SourceType] {
     &[SourceType::JavaScript]
   }
 
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -124,27 +127,20 @@ impl Module for FallbackModule {
     _build_context: BuildContext,
     _: Option<&Compilation>,
   ) -> Result<BuildResult> {
-    let build_info = BuildInfo {
-      strict: true,
-      ..Default::default()
-    };
-
     let mut dependencies: Vec<BoxDependency> = Vec::new();
     for request in &self.requests {
       dependencies.push(Box::new(FallbackItemDependency::new(request.clone())))
     }
 
     Ok(BuildResult {
-      build_info,
-      build_meta: Default::default(),
       dependencies,
       blocks: Vec::new(),
       optimization_bailouts: vec![],
     })
   }
 
-  #[tracing::instrument(name = "FallbackModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
-  fn code_generation(
+  // #[tracing::instrument("FallbackModule::code_generation", skip_all, fields(identifier = ?self.identifier()))]
+  async fn code_generation(
     &self,
     compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -158,7 +154,9 @@ impl Module for FallbackModule {
       .get_dependencies()
       .iter()
       .filter_map(|dep| module_graph.get_module_by_dependency_id(dep))
-      .filter_map(|module| compilation.chunk_graph.get_module_id(module.identifier()))
+      .filter_map(|module| {
+        ChunkGraph::get_module_id(&compilation.module_ids_artifact, module.identifier())
+      })
       .collect();
     let code = format!(
       r#"
@@ -184,18 +182,18 @@ module.exports = loop();
       ids = json_stringify(&ids),
       require = RuntimeGlobals::REQUIRE,
     );
-    codegen = codegen.with_javascript(RawSource::from(code).boxed());
+    codegen = codegen.with_javascript(RawStringSource::from(code).boxed());
     Ok(codegen)
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    module_update_hash(self, hasher, compilation, runtime);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    module_update_hash(self, &mut hasher, compilation, runtime);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

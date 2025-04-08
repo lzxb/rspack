@@ -1,13 +1,9 @@
-import type {
-	JsAssetInfo,
-	RawModuleRuleUse,
-	RawOptions
-} from "@rspack/binding";
-import type { ResolveRequest } from "enhanced-resolve";
+import type { AssetInfo, RawModuleRuleUse, RawOptions } from "@rspack/binding";
 
 import type { Compilation } from "../Compilation";
 import type { Compiler } from "../Compiler";
 import type { Module } from "../Module";
+import type { ResolveRequest } from "../Resolver";
 import { resolvePluginImport } from "../builtin-loader";
 import {
 	type FeatureOptions,
@@ -17,6 +13,7 @@ import { type LoaderObject, parsePathQueryFragment } from "../loader-runner";
 import type { Logger } from "../logging/Logger";
 import { isNil } from "../util";
 import type Hash from "../util/hash";
+import type { RspackOptionsNormalized } from "./normalization";
 import type {
 	Mode,
 	PublicPath,
@@ -29,7 +26,6 @@ import type {
 export const BUILTIN_LOADER_PREFIX = "builtin:";
 
 export interface ComposeJsUseOptions {
-	devtool: RawOptions["devtool"];
 	context: RawOptions["context"];
 	mode: RawOptions["mode"];
 	experiments: RawOptions["experiments"];
@@ -91,26 +87,103 @@ export interface Diagnostic {
 	severity: "error" | "warning";
 }
 
-interface LoaderExperiments {
+export interface LoaderExperiments {
 	emitDiagnostic(diagnostic: Diagnostic): void;
 }
 
+export interface ImportModuleOptions {
+	/**
+	 * Specify a layer in which this module is placed/compiled
+	 */
+	layer?: string;
+	/**
+	 * The public path used for the built modules
+	 */
+	publicPath?: PublicPath;
+	/**
+	 * Target base uri
+	 */
+	baseUri?: string;
+}
+
 export interface LoaderContext<OptionsType = {}> {
+	/**
+	 * The version number of the loader API. Currently 2.
+	 * This is useful for providing backwards compatibility. Using the version you can specify
+	 * custom logic or fallbacks for breaking changes.
+	 */
 	version: 2;
+	/**
+	 * The path string of the current module.
+	 * @example `'/abc/resource.js?query#hash'`.
+	 */
 	resource: string;
+	/**
+	 * The path string of the current module, excluding the query and fragment parameters.
+	 * @example `'/abc/resource.js?query#hash'` in `'/abc/resource.js'`.
+	 */
 	resourcePath: string;
+	/**
+	 * The query parameter for the path string of the current module.
+	 * @example `'?query'` in `'/abc/resource.js?query#hash'`.
+	 */
 	resourceQuery: string;
+	/**
+	 * The fragment parameter of the current module's path string.
+	 * @example `'#hash'` in `'/abc/resource.js?query#hash'`.
+	 */
 	resourceFragment: string;
+	/**
+	 * Tells Rspack that this loader will be called asynchronously. Returns `this.callback`.
+	 */
 	async(): LoaderContextCallback;
+	/**
+	 * A function that can be called synchronously or asynchronously in order to return multiple
+	 * results. The expected arguments are:
+	 *
+	 * 1. The first parameter must be `Error` or `null`, which marks the current module as a
+	 * compilation failure.
+	 * 2. The second argument is a `string` or `Buffer`, which indicates the contents of the file
+	 * after the module has been processed by the loader.
+	 * 3. The third parameter is a source map that can be processed by the loader.
+	 * 4. The fourth parameter is ignored by Rspack and can be anything (e.g. some metadata).
+	 */
 	callback: LoaderContextCallback;
+	/**
+	 * A function that sets the cacheable flag.
+	 * By default, the processing results of the loader are marked as cacheable.
+	 * Calling this method and passing `false` turns off the loader's ability to
+	 * cache processing results.
+	 */
 	cacheable(cacheable?: boolean): void;
+	/**
+	 * Tells if source map should be generated. Since generating source maps can be an expensive task,
+	 * you should check if source maps are actually requested.
+	 */
 	sourceMap: boolean;
+	/**
+	 * The base path configured in Rspack config via `context`.
+	 */
 	rootContext: string;
+	/**
+	 * The directory path of the currently processed module, which changes with the
+	 * location of each processed module.
+	 * For example, if the loader is processing `/project/src/components/Button.js`,
+	 * then the value of `this.context` would be `/project/src/components`.
+	 */
 	context: string | null;
+	/**
+	 * The index in the loaders array of the current loader.
+	 */
 	loaderIndex: number;
 	remainingRequest: string;
 	currentRequest: string;
 	previousRequest: string;
+	/**
+	 * The module specifier string after being resolved.
+	 * For example, if a `resource.js` is processed by `loader1.js` and `loader2.js`, the value of
+	 * `this.request` will be `/path/to/loader1.js!/path/to/loader2.js!/path/to/resource.js`.
+	 */
 	request: string;
 	/**
 	 * An array of all the loaders. It is writeable in the pitch phase.
@@ -131,13 +204,33 @@ export interface LoaderContext<OptionsType = {}> {
 	 * ]
 	 */
 	loaders: LoaderObject[];
+	/**
+	 * The value of `mode` is read when Rspack is run.
+	 * The possible values are: `'production'`, `'development'`, `'none'`
+	 */
 	mode?: Mode;
+	/**
+	 * The current compilation target. Passed from `target` configuration options.
+	 */
 	target?: Target;
+	/**
+	 * Whether HMR is enabled.
+	 */
 	hot?: boolean;
 	/**
-	 * @param schema To provide the best performance, Rspack does not perform the schema validation. If your loader requires schema validation, please call scheme-utils or zod on your own.
+	 * Get the options passed in by the loader's user.
+	 * @param schema To provide the best performance, Rspack does not perform the schema
+	 * validation. If your loader requires schema validation, please call scheme-utils or
+	 * zod on your own.
 	 */
 	getOptions(schema?: any): OptionsType;
+	/**
+	 * Resolve a module specifier.
+	 * @param context The absolute path to a directory. This directory is used as the starting
+	 * location for resolving.
+	 * @param request The module specifier to be resolved.
+	 * @param callback A callback function that gives the resolved path.
+	 */
 	resolve(
 		context: string,
 		request: string,
@@ -147,6 +240,9 @@ export interface LoaderContext<OptionsType = {}> {
 			arg2?: ResolveRequest
 		) => void
 	): void;
+	/**
+	 * Create a resolver like `this.resolve`.
+	 */
 	getResolve(
 		options: Resolve
 	):
@@ -155,48 +251,132 @@ export interface LoaderContext<OptionsType = {}> {
 				context: string,
 				request: string
 		  ) => Promise<string | false | undefined>);
+	/**
+	 * Get the logger of this compilation, through which messages can be logged.
+	 */
 	getLogger(name: string): Logger;
+	/**
+	 * Emit an error. Unlike `throw` and `this.callback(err)` in the loader, it does not
+	 * mark the current module as a compilation failure, it just adds an error to Rspack's
+	 * Compilation and displays it on the command line at the end of this compilation.
+	 */
 	emitError(error: Error): void;
+	/**
+	 * Emit a warning.
+	 */
 	emitWarning(warning: Error): void;
+	/**
+	 * Emit a new file. This method allows you to create new files during the loader execution.
+	 */
 	emitFile(
 		name: string,
 		content: string | Buffer,
 		sourceMap?: string,
-		assetInfo?: JsAssetInfo
+		assetInfo?: AssetInfo
 	): void;
+	/**
+	 * Add a file as a dependency on the loader results so that any changes to them can be listened to.
+	 * For example, `sass-loader`, `less-loader` use this trick to recompile when the imported style
+	 * files change.
+	 */
 	addDependency(file: string): void;
+	/**
+	 * Alias of `this.addDependency()`.
+	 */
 	dependency(file: string): void;
+	/**
+	 * Add the directory as a dependency for the loader results so that any changes to the
+	 * files in the directory can be listened to.
+	 */
 	addContextDependency(context: string): void;
+	/**
+	 * Add a currently non-existent file as a dependency of the loader result, so that its
+	 * creation and any changes can be listened. For example, when a new file is created at
+	 * that path, it will trigger a rebuild.
+	 */
 	addMissingDependency(missing: string): void;
+	/**
+	 * Removes all dependencies of the loader result.
+	 */
 	clearDependencies(): void;
 	getDependencies(): string[];
 	getContextDependencies(): string[];
 	getMissingDependencies(): string[];
 	addBuildDependency(file: string): void;
-	importModule(
+	/**
+	 * Compile and execute a module at the build time.
+	 * This is an alternative lightweight solution for the child compiler.
+	 * `importModule` will return a Promise if no callback is provided.
+	 *
+	 * @example
+	 * ```ts
+	 * const modulePath = path.resolve(__dirname, 'some-module.ts');
+	 * const moduleExports = await this.importModule(modulePath, {
+	 *   // optional options
+	 * });
+	 * ```
+	 */
+	importModule<T = any>(
 		request: string,
-		options: { layer?: string; publicPath?: PublicPath; baseUri?: string },
-		callback: (err?: Error, res?: any) => void
+		options: ImportModuleOptions | undefined,
+		callback: (err?: null | Error, exports?: T) => any
 	): void;
+	importModule<T = any>(
+		request: string,
+		options?: ImportModuleOptions
+	): Promise<T>;
+	/**
+	 * Access to the `compilation` object's `inputFileSystem` property.
+	 */
 	fs: any;
 	/**
 	 * This is an experimental API and maybe subject to change.
 	 * @experimental
 	 */
 	experiments: LoaderExperiments;
+	/**
+	 * Access to some utilities.
+	 */
 	utils: {
+		/**
+		 * Return a new request string using absolute paths when possible.
+		 */
 		absolutify: (context: string, request: string) => string;
+		/**
+		 * Return a new request string avoiding absolute paths when possible.
+		 */
 		contextify: (context: string, request: string) => string;
+		/**
+		 * Return a new Hash object from provided hash function.
+		 */
 		createHash: (algorithm?: string) => Hash;
 	};
-	query: string | OptionsType;
-	data: unknown;
-	_compiler: Compiler;
-	_compilation: Compilation;
-	_module: Module;
-
 	/**
-	 * Note: This is not a webpack public API, maybe removed in future.
+	 * The value depends on the loader configuration:
+	 * - If the current loader was configured with an options object, `this.query` will
+	 * point to that object.
+	 * - If the current loader has no options, but was invoked with a query string, this
+	 * will be a string starting with `?`.
+	 */
+	query: string | OptionsType;
+	/**
+	 * A data object shared between the pitch and the normal phase.
+	 */
+	data: unknown;
+	/**
+	 * Access to the current Compiler object of Rspack.
+	 */
+	_compiler: Compiler;
+	/**
+	 * Access to the current Compilation object of Rspack.
+	 */
+	_compilation: Compilation;
+	/**
+	 * @deprecated Hacky access to the Module object being loaded.
+	 */
+	_module: Module;
+	/**
+	 * Note: This is not a Rspack public API, maybe removed in future.
 	 * Store some data from loader, and consume it from parser, it may be removed in the future
 	 *
 	 * @internal
@@ -348,7 +528,7 @@ function resolveStringifyLoaders(
 	isBuiltin: boolean
 ) {
 	const obj = parsePathQueryFragment(use.loader);
-	let ident: string | null = null;
+	let ident = use.ident;
 
 	if (use.options === null) {
 	} else if (use.options === undefined) {
@@ -359,9 +539,21 @@ function resolveStringifyLoaders(
 	else if (typeof use.options === "object") obj.query = `??${(ident = path)}`;
 	else obj.query = `?${JSON.stringify(use.options)}`;
 
+	const parallelism = !!use.parallel;
+
+	if (parallelism && (!use.options || typeof use.options !== "object")) {
+		throw new Error(
+			`\`Rule.use.parallel\` requires \`Rule.use.options\` to be an object.\nHowever the received value is \`${use.options}\` under option path \`${path}\`\nInternally, parallelism is provided by passing \`Rule.use.ident\` to the loader as an identifier to ident the parallelism option\nYou can either replace the \`Rule.use.loader\` with \`Rule.use.options = {}\` or remove \`Rule.use.parallel\`.`
+		);
+	}
+
 	if (use.options && typeof use.options === "object") {
 		if (!ident) ident = "[[missing ident]]";
 		compiler.__internal__ruleSet.references.set(ident, use.options);
+		compiler.__internal__ruleSet.references.set(
+			`${ident}$$parallelism`,
+			parallelism
+		);
 		if (isBuiltin) {
 			compiler.__internal__ruleSet.builtinReferences.set(ident, use.options);
 		}
@@ -370,13 +562,23 @@ function resolveStringifyLoaders(
 	return obj.path + obj.query + obj.fragment;
 }
 
-export function isUseSourceMap(devtool: RawOptions["devtool"]): boolean {
+export function isUseSourceMap(
+	devtool: RspackOptionsNormalized["devtool"]
+): boolean {
+	if (!devtool) {
+		return false;
+	}
 	return (
 		devtool.includes("source-map") &&
 		(devtool.includes("module") || !devtool.includes("cheap"))
 	);
 }
 
-export function isUseSimpleSourceMap(devtool: RawOptions["devtool"]): boolean {
+export function isUseSimpleSourceMap(
+	devtool: RspackOptionsNormalized["devtool"]
+): boolean {
+	if (!devtool) {
+		return false;
+	}
 	return devtool.includes("source-map") && !isUseSourceMap(devtool);
 }

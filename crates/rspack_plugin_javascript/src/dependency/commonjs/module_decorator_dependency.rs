@@ -1,16 +1,19 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  create_exports_object_referenced, create_no_exports_referenced, AsContextDependency, Compilation,
-  Dependency, DependencyId, DependencyTemplate, DependencyType, InitFragmentKey, InitFragmentStage,
-  ModuleDependency, NormalInitFragment, RuntimeGlobals, RuntimeSpec, TemplateContext,
-  TemplateReplaceSource,
+  create_exports_object_referenced, create_no_exports_referenced, AsContextDependency, ChunkGraph,
+  Compilation, Dependency, DependencyId, DependencyTemplate, DependencyType, FactorizeInfo,
+  InitFragmentKey, InitFragmentStage, ModuleDependency, NormalInitFragment, RuntimeGlobals,
+  RuntimeSpec, TemplateContext, TemplateReplaceSource,
 };
 use rspack_util::ext::DynHash;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ModuleDecoratorDependency {
   decorator: RuntimeGlobals,
   allow_exports_access: bool,
   id: DependencyId,
+  factorize_info: FactorizeInfo,
 }
 
 impl ModuleDecoratorDependency {
@@ -19,16 +22,27 @@ impl ModuleDecoratorDependency {
       decorator,
       allow_exports_access,
       id: DependencyId::new(),
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ModuleDecoratorDependency {
   fn request(&self) -> &str {
     "self"
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ModuleDecoratorDependency {
   fn apply(
     &self,
@@ -55,11 +69,10 @@ impl DependencyTemplate for ModuleDecoratorDependency {
     let module_argument = module.get_module_argument();
 
     // ref: tests/webpack-test/cases/scope-hoisting/issue-5096 will return a `null` as module id
-    let module_id = compilation
-      .chunk_graph
-      .get_module_id(module.identifier())
-      .map(|s| s.to_string())
-      .unwrap_or_default();
+    let module_id =
+      ChunkGraph::get_module_id(&compilation.module_ids_artifact, module.identifier())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
 
     init_fragments.push(Box::new(NormalInitFragment::new(
       format!(
@@ -75,10 +88,6 @@ impl DependencyTemplate for ModuleDecoratorDependency {
     )));
   }
 
-  fn dependency_id(&self) -> Option<rspack_core::DependencyId> {
-    None
-  }
-
   fn update_hash(
     &self,
     hasher: &mut dyn std::hash::Hasher,
@@ -92,6 +101,7 @@ impl DependencyTemplate for ModuleDecoratorDependency {
 
 impl AsContextDependency for ModuleDecoratorDependency {}
 
+#[cacheable_dyn]
 impl Dependency for ModuleDecoratorDependency {
   fn id(&self) -> &DependencyId {
     &self.id

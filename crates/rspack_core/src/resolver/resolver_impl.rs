@@ -8,13 +8,16 @@ use rspack_error::{
   miette::{diagnostic, Diagnostic},
   DiagnosticExt, Severity, TraceableError,
 };
-use rspack_fs::FileSystem;
+use rspack_fs::ReadableFileSystem;
 use rspack_loader_runner::DescriptionData;
 use rspack_paths::AssertUtf8;
+use rspack_util::location::try_line_column_length_to_offset_length;
 use rustc_hash::FxHashSet as HashSet;
 
 use super::{boxfs::BoxFS, ResolveResult, Resource};
-use crate::{AliasMap, DependencyCategory, Resolve, ResolveArgs, ResolveOptionsWithDependencyType};
+use crate::{
+  Alias, AliasMap, DependencyCategory, Resolve, ResolveArgs, ResolveOptionsWithDependencyType,
+};
 
 #[derive(Debug, Default, Clone)]
 pub struct ResolveContext {
@@ -30,22 +33,30 @@ pub enum ResolveInnerError {
   RspackResolver(rspack_resolver::ResolveError),
 }
 
+impl fmt::Display for ResolveInnerError {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    match self {
+      Self::RspackResolver(error) => write!(f, "{error:?}"),
+    }
+  }
+}
+
 /// Proxy to [rspack_resolver::ResolveOptions]
 pub enum ResolveInnerOptions<'a> {
   RspackResolver(&'a rspack_resolver::ResolveOptions),
 }
 
-impl<'a> fmt::Debug for ResolveInnerOptions<'a> {
+impl fmt::Debug for ResolveInnerOptions<'_> {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     match self {
       Self::RspackResolver(options) => {
-        write!(f, "{:?}", options)
+        write!(f, "{options:?}")
       }
     }
   }
 }
 
-impl<'a> ResolveInnerOptions<'a> {
+impl ResolveInnerOptions<'_> {
   pub fn is_enforce_extension_enabled(&self) -> bool {
     match self {
       Self::RspackResolver(options) => matches!(
@@ -83,11 +94,11 @@ pub struct Resolver {
 }
 
 impl Resolver {
-  pub fn new(options: Resolve, fs: Arc<dyn FileSystem>) -> Self {
+  pub fn new(options: Resolve, fs: Arc<dyn ReadableFileSystem>) -> Self {
     Self::new_rspack_resolver(options, fs)
   }
 
-  fn new_rspack_resolver(options: Resolve, fs: Arc<dyn FileSystem>) -> Self {
+  fn new_rspack_resolver(options: Resolve, fs: Arc<dyn ReadableFileSystem>) -> Self {
     let options = to_rspack_resolver_options(options, false, DependencyCategory::Unknown);
     let boxfs = BoxFS::new(fs);
     let resolver = rspack_resolver::ResolverGeneric::new_with_file_system(boxfs, options);
@@ -111,6 +122,7 @@ impl Resolver {
       options_with_dependency_type.resolve_to_context,
       options_with_dependency_type.dependency_category,
     );
+
     let resolver = resolver.clone_with_options(options);
     Self { resolver }
   }
@@ -195,22 +207,25 @@ fn to_rspack_resolver_options(
   let imports_fields = options
     .imports_fields
     .unwrap_or_else(|| vec![vec!["imports".to_string()]]);
-  let extensions = options.extensions.expect("should have extensions");
-  let alias = options
-    .alias
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(key, value)| {
-      let value = value
-        .into_iter()
-        .map(|x| match x {
-          AliasMap::Path(target) => rspack_resolver::AliasValue::Path(target),
-          AliasMap::Ignore => rspack_resolver::AliasValue::Ignore,
-        })
-        .collect();
-      (key, value)
-    })
-    .collect();
+  let extensions = options
+    .extensions
+    .unwrap_or_else(|| vec![".js".to_string(), ".json".to_string(), ".wasm".to_string()]);
+  let alias = match options.alias.unwrap_or_default() {
+    Alias::OverwriteToNoAlias => vec![],
+    Alias::MergeAlias(alias) => alias
+      .into_iter()
+      .map(|(key, value)| {
+        let value = value
+          .into_iter()
+          .map(|x| match x {
+            AliasMap::Path(target) => rspack_resolver::AliasValue::Path(target),
+            AliasMap::Ignore => rspack_resolver::AliasValue::Ignore,
+          })
+          .collect();
+        (key, value)
+      })
+      .collect(),
+  };
   let prefer_relative = options.prefer_relative.unwrap_or(false);
   let prefer_absolute = options.prefer_absolute.unwrap_or(false);
   let symlinks = options.symlinks.unwrap_or(true);
@@ -226,21 +241,22 @@ fn to_rspack_resolver_options(
   let modules = options
     .modules
     .unwrap_or_else(|| vec!["node_modules".to_string()]);
-  let fallback = options
-    .fallback
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(key, value)| {
-      let value = value
-        .into_iter()
-        .map(|x| match x {
-          AliasMap::Path(target) => rspack_resolver::AliasValue::Path(target),
-          AliasMap::Ignore => rspack_resolver::AliasValue::Ignore,
-        })
-        .collect();
-      (key, value)
-    })
-    .collect();
+  let fallback = match options.fallback.unwrap_or_default() {
+    Alias::OverwriteToNoAlias => vec![],
+    Alias::MergeAlias(items) => items
+      .into_iter()
+      .map(|(key, value)| {
+        let value = value
+          .into_iter()
+          .map(|x| match x {
+            AliasMap::Path(target) => rspack_resolver::AliasValue::Path(target),
+            AliasMap::Ignore => rspack_resolver::AliasValue::Ignore,
+          })
+          .collect();
+        (key, value)
+      })
+      .collect(),
+  };
   let fully_specified = options.fully_specified.unwrap_or_default();
   let exports_fields = options
     .exports_fields
@@ -285,6 +301,7 @@ fn to_rspack_resolver_options(
     roots,
     builtin_modules: false,
     imports_fields,
+    enable_pnp: options.pnp.unwrap_or(false),
   }
 }
 
@@ -296,6 +313,66 @@ fn map_rspack_resolver_error(
     rspack_resolver::ResolveError::IOError(error) => diagnostic!("{}", error).boxed(),
     rspack_resolver::ResolveError::Recursion => map_resolver_error(true, args),
     rspack_resolver::ResolveError::NotFound(_) => map_resolver_error(false, args),
+    rspack_resolver::ResolveError::JSON(error) => {
+      if let Some(content) = &error.content {
+        let rope = ropey::Rope::from(&**content);
+        let Some((offset, _)) =
+          try_line_column_length_to_offset_length(&rope, error.line, error.column, 0)
+        else {
+          return diagnostic!(
+            "JSON parse error: {:?} in '{}'",
+            error,
+            error.path.display()
+          )
+          .boxed();
+        };
+        drop(rope);
+
+        fn ceil_char_boundary(content: &str, mut index: usize) -> usize {
+          if index > content.len() {
+            return content.len();
+          }
+
+          while !content.is_char_boundary(index) {
+            if index == 0 {
+              return 0;
+            }
+            index = index.saturating_sub(1);
+          }
+
+          index
+        }
+
+        let offset = ceil_char_boundary(content, offset);
+
+        if content[offset..].starts_with('\u{feff}') {
+          return TraceableError::from_file(
+            content.clone(),
+            offset,
+            offset,
+            "JSON parse error".to_string(),
+            format!("BOM character found in '{}'", error.path.display()),
+          )
+          .boxed();
+        }
+
+        TraceableError::from_file(
+          content.clone(),
+          offset,
+          offset,
+          "JSON parse error".to_string(),
+          format!("{} in '{}'", error.message, error.path.display()),
+        )
+        .boxed()
+      } else {
+        diagnostic!(
+          "JSON parse error: {:?} in '{}'",
+          error,
+          error.path.display()
+        )
+        .boxed()
+      }
+    }
     _ => diagnostic!("{}", error).boxed(),
   }
 }

@@ -1,35 +1,44 @@
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_core::{
-  AsContextDependency, Dependency, InitFragmentExt, InitFragmentKey, InitFragmentStage,
-  NormalInitFragment,
+  AsContextDependency, Dependency, DependencyCategory, DependencyId, DependencyTemplate,
+  DependencyType, ExternalRequest, ExternalType, FactorizeInfo, InitFragmentExt, InitFragmentKey,
+  InitFragmentStage, ModuleDependency, NormalInitFragment, TemplateContext, TemplateReplaceSource,
 };
-use rspack_core::{Compilation, DependencyType, ExternalRequest, ExternalType, RuntimeSpec};
-use rspack_core::{DependencyCategory, DependencyId, DependencyTemplate};
-use rspack_core::{ModuleDependency, TemplateContext, TemplateReplaceSource};
 use rspack_plugin_javascript::dependency::create_resource_identifier_for_esm_dependency;
 use swc_core::ecma::atoms::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ModernModuleReexportStarExternalDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
   target_request: ExternalRequest,
   external_type: ExternalType,
   resource_identifier: String,
+  factorize_info: FactorizeInfo,
 }
 
 impl ModernModuleReexportStarExternalDependency {
-  pub fn new(request: Atom, target_request: ExternalRequest, external_type: ExternalType) -> Self {
+  pub fn new(
+    id: DependencyId,
+    request: Atom,
+    target_request: ExternalRequest,
+    external_type: ExternalType,
+  ) -> Self {
     let resource_identifier = create_resource_identifier_for_esm_dependency(request.as_str(), None);
     Self {
+      id,
       request,
       target_request,
       external_type,
-      id: DependencyId::new(),
       resource_identifier,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ModernModuleReexportStarExternalDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -52,6 +61,7 @@ impl Dependency for ModernModuleReexportStarExternalDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ModernModuleReexportStarExternalDependency {
   fn request(&self) -> &str {
     &self.request
@@ -64,8 +74,17 @@ impl ModuleDependency for ModernModuleReexportStarExternalDependency {
   fn set_request(&mut self, request: String) {
     self.request = request.into();
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ModernModuleReexportStarExternalDependency {
   fn apply(
     &self,
@@ -93,18 +112,6 @@ impl DependencyTemplate for ModernModuleReexportStarExternalDependency {
         .boxed(),
       );
     }
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

@@ -1,19 +1,26 @@
-use std::sync::LazyLock;
-use std::{borrow::Cow, cmp::max, hash::Hash, sync::Arc};
+use std::{
+  borrow::Cow,
+  hash::Hash,
+  sync::{Arc, LazyLock},
+};
 
 use cow_utils::CowUtils;
 use regex::Regex;
+use rspack_cacheable::cacheable;
 use rspack_collections::{DatabaseItem, IdentifierMap, IdentifierSet, UkeySet};
-use rspack_core::rspack_sources::{BoxSource, CachedSource, SourceExt};
 use rspack_core::{
-  rspack_sources::{ConcatSource, RawSource, SourceMap, SourceMapSource, WithoutOriginalOptions},
-  ApplyContext, Chunk, ChunkGroupUkey, ChunkKind, ChunkUkey, Compilation, CompilationContentHash,
-  CompilationParams, CompilationRenderManifest, CompilationRuntimeRequirementInTree,
-  CompilerCompilation, CompilerOptions, Filename, Module, ModuleGraph, ModuleIdentifier,
-  ModuleType, NormalModuleFactoryParser, ParserAndGenerator, ParserOptions, PathData, Plugin,
-  PluginContext, RenderManifestEntry, RuntimeGlobals, SourceType,
+  get_undo_path,
+  rspack_sources::{
+    BoxSource, CachedSource, ConcatSource, RawStringSource, SourceExt, SourceMap, SourceMapSource,
+    WithoutOriginalOptions,
+  },
+  ApplyContext, AssetInfo, Chunk, ChunkGraph, ChunkGroupUkey, ChunkKind, ChunkUkey, Compilation,
+  CompilationContentHash, CompilationParams, CompilationRenderManifest,
+  CompilationRuntimeRequirementInTree, CompilerCompilation, CompilerOptions, DependencyType,
+  Filename, Module, ModuleGraph, ModuleIdentifier, ModuleType, NormalModuleFactoryParser,
+  ParserAndGenerator, ParserOptions, PathData, Plugin, PluginContext, RenderManifestEntry,
+  RuntimeGlobals, SourceType,
 };
-use rspack_core::{AssetInfo, ChunkGraph};
 use rspack_error::{Diagnostic, Result};
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
@@ -25,7 +32,7 @@ use rustc_hash::FxHashMap;
 use ustr::Ustr;
 
 use crate::{
-  css_module::{CssModule, CssModuleFactory, DEPENDENCY_TYPE},
+  css_module::{CssModule, CssModuleFactory},
   parser_plugin::PluginCssExtractParserPlugin,
   runtime::CssLoadingRuntimeModule,
 };
@@ -76,6 +83,7 @@ pub struct CssExtractOptions {
   pub link_type: Option<String>,
   pub runtime: bool,
   pub pathinfo: bool,
+  pub enforce_relative: bool,
 }
 
 // impl PartialEq for CssExtractOptions {
@@ -101,6 +109,7 @@ pub struct CssExtractOptions {
 //   }
 // }
 
+#[cacheable]
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum InsertType {
   Fn(String),
@@ -132,7 +141,14 @@ impl PluginCssExtract {
       .collect();
 
     let mut groups = chunk.groups().iter().cloned().collect::<Vec<_>>();
-    groups.sort_unstable();
+    groups.sort_by(|a, b| {
+      let a = compilation.chunk_group_by_ukey.expect_get(a);
+      let b = compilation.chunk_group_by_ukey.expect_get(b);
+      match a.index.cmp(&b.index) {
+        std::cmp::Ordering::Equal => a.ukey.cmp(&b.ukey),
+        order_res => order_res,
+      }
+    });
 
     let mut modules_by_chunk_group = groups
       .iter()
@@ -295,12 +311,12 @@ impl PluginCssExtract {
     (result, conflicts)
   }
 
-  async fn render_content_asset<'comp>(
+  async fn render_content_asset(
     &self,
     chunk: &Chunk,
     rendered_modules: &[&dyn Module],
     filename: &str,
-    compilation: &'comp Compilation,
+    compilation: &'_ Compilation,
   ) -> (BoxSource, Vec<Diagnostic>) {
     let module_graph = compilation.get_module_graph();
     // mini-extract-plugin has different conflict order in some cases,
@@ -324,7 +340,12 @@ Conflicting order. Following module has been added:
  * {}
 despite it was not able to fulfill desired ordering with these modules:
 {}"#,
-            chunk.name().unwrap_or(chunk.id().unwrap_or_default()),
+            chunk
+              .name()
+              .or_else(|| chunk
+                .id(&compilation.chunk_ids_artifact)
+                .map(|id| id.as_str()))
+              .unwrap_or_default(),
             fallback_module.readable_identifier(&compilation.options.context),
             conflict
               .reasons
@@ -374,7 +395,7 @@ despite it was not able to fulfill desired ordering with these modules:
       let header = self.options.pathinfo.then(|| {
         let req_str = readable_identifier.cow_replace("*/", "*_/");
         let req_str_star = "*".repeat(req_str.len());
-        RawSource::from(format!(
+        RawStringSource::from(format!(
           "/*!****{req_str_star}****!*\\\n  !*** {req_str} ***!\n  \\****{req_str_star}****/\n"
         ))
       });
@@ -387,9 +408,9 @@ despite it was not able to fulfill desired ordering with these modules:
           static MEDIA_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r#";|\s*$"#).expect("should compile"));
           let new_content = MEDIA_RE.replace_all(content.as_ref(), media);
-          external_source.add(RawSource::from(new_content.to_string() + "\n"));
+          external_source.add(RawStringSource::from(new_content.to_string() + "\n"));
         } else {
-          external_source.add(RawSource::from(content.to_string() + "\n"));
+          external_source.add(RawStringSource::from(content.to_string() + "\n"));
         }
       } else {
         let mut need_supports = false;
@@ -403,21 +424,29 @@ despite it was not able to fulfill desired ordering with these modules:
           && !supports.is_empty()
         {
           need_supports = true;
-          source.add(RawSource::from(format!("@supports ({}) {{\n", supports)));
+          source.add(RawStringSource::from(format!(
+            "@supports ({}) {{\n",
+            supports
+          )));
         }
 
         if let Some(media) = &module.media
           && !media.is_empty()
         {
           need_media = true;
-          source.add(RawSource::from(format!("@media {} {{\n", media)));
+          source.add(RawStringSource::from(format!("@media {} {{\n", media)));
         }
 
         if let Some(layer) = &module.layer {
-          source.add(RawSource::from(format!("@layer {} {{\n", layer)));
+          source.add(RawStringSource::from(format!("@layer {} {{\n", layer)));
         }
 
-        let undo_path = get_undo_path(filename, compilation.options.output.path.as_str(), false);
+        // different from webpack, add `enforce_relative` to preserve './'
+        let undo_path = get_undo_path(
+          filename,
+          compilation.options.output.path.to_string(),
+          self.options.enforce_relative,
+        );
 
         let content = content.cow_replace(ABSOLUTE_PUBLIC_PATH, "");
         let content = content.cow_replace(SINGLE_DOT_PATH_SEGMENT, ".");
@@ -437,21 +466,21 @@ despite it was not able to fulfill desired ordering with these modules:
             source_map: SourceMap::from_json(source_map).expect("invalid sourcemap"),
           }))
         } else {
-          source.add(RawSource::from(content.to_string()));
+          source.add(RawStringSource::from(content.to_string()));
         }
 
-        source.add(RawSource::from("\n"));
+        source.add(RawStringSource::from_static("\n"));
 
         if need_media {
-          source.add(RawSource::from("}\n"));
+          source.add(RawStringSource::from_static("}\n"));
         }
 
         if need_supports {
-          source.add(RawSource::from("}\n"));
+          source.add(RawStringSource::from_static("}\n"));
         }
 
         if module.layer.is_some() {
-          source.add(RawSource::from("}\n"));
+          source.add(RawStringSource::from_static("}\n"));
         }
       }
     }
@@ -467,12 +496,12 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  compilation.set_dependency_factory(*DEPENDENCY_TYPE, Arc::new(CssModuleFactory));
+  compilation.set_dependency_factory(DependencyType::ExtractCSS, Arc::new(CssModuleFactory));
   Ok(())
 }
 
 #[plugin_hook(CompilationRuntimeRequirementInTree for PluginCssExtract)]
-fn runtime_requirement_in_tree(
+async fn runtime_requirement_in_tree(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,
@@ -516,7 +545,7 @@ fn runtime_requirement_in_tree(
         |_| false,
         move |chunk, compilation| {
           chunk
-            .content_hash(&compilation.chunk_hashes_results)?
+            .content_hash(&compilation.chunk_hashes_artifact)?
             .contains_key(&SOURCE_TYPE[0])
             .then(|| {
               if chunk.can_be_initial(&compilation.chunk_group_by_ukey) {
@@ -609,22 +638,28 @@ async fn render_manifest(
   };
 
   let mut asset_info = AssetInfo::default();
-  let filename = compilation.get_path_with_info(
-    filename_template,
-    PathData::default()
-      .chunk_id_optional(chunk.id())
-      .chunk_hash_optional(chunk.rendered_hash(
-        &compilation.chunk_hashes_results,
-        compilation.options.output.hash_digest_length,
-      ))
-      .chunk_name_optional(chunk.name_for_filename_template())
-      .content_hash_optional(chunk.rendered_content_hash_by_source_type(
-        &compilation.chunk_hashes_results,
-        &SOURCE_TYPE[0],
-        compilation.options.output.hash_digest_length,
-      )),
-    &mut asset_info,
-  )?;
+  let filename = compilation
+    .get_path_with_info(
+      filename_template,
+      PathData::default()
+        .chunk_id_optional(
+          chunk
+            .id(&compilation.chunk_ids_artifact)
+            .map(|id| id.as_str()),
+        )
+        .chunk_hash_optional(chunk.rendered_hash(
+          &compilation.chunk_hashes_artifact,
+          compilation.options.output.hash_digest_length,
+        ))
+        .chunk_name_optional(chunk.name_for_filename_template(&compilation.chunk_ids_artifact))
+        .content_hash_optional(chunk.rendered_content_hash_by_source_type(
+          &compilation.chunk_hashes_artifact,
+          &SOURCE_TYPE[0],
+          compilation.options.output.hash_digest_length,
+        )),
+      &mut asset_info,
+    )
+    .await?;
 
   let (source, more_diagnostics) = compilation
     .old_cache
@@ -650,7 +685,7 @@ async fn render_manifest(
 }
 
 #[plugin_hook(NormalModuleFactoryParser for PluginCssExtract)]
-fn nmf_parser(
+async fn nmf_parser(
   &self,
   module_type: &ModuleType,
   parser: &mut dyn ParserAndGenerator,
@@ -697,57 +732,5 @@ impl Plugin for PluginCssExtract {
       .tap(nmf_parser::new(self));
 
     Ok(())
-  }
-}
-
-#[allow(clippy::unwrap_used)]
-fn get_undo_path(filename: &str, output_path: &str, enforce_relative: bool) -> String {
-  let mut depth: isize = -1;
-  let mut append = "".into();
-
-  // eslint-disable-next-line no-param-reassign
-  let output_path = output_path.strip_suffix('\\').unwrap_or(output_path);
-  let mut output_path = output_path
-    .strip_suffix('/')
-    .unwrap_or(output_path)
-    .to_string();
-
-  static PATH_SEP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[\\/]+"#).expect("should compile"));
-
-  for part in PATH_SEP.split(filename) {
-    if part == ".." {
-      if depth > -1 {
-        depth -= 1;
-      } else {
-        let i = output_path.find('/');
-        let j = output_path.find('\\');
-        let pos = if i.is_none() {
-          j
-        } else if j.is_none() {
-          i
-        } else {
-          max(i, j)
-        };
-
-        if pos.is_none() {
-          return format!("{output_path}/");
-        }
-
-        append = format!("{}/{append}", &output_path[pos.unwrap() + 1..]);
-
-        output_path = output_path[0..pos.unwrap()].to_string();
-      }
-    } else if part != "." {
-      depth += 1;
-    }
-  }
-
-  if depth > 0 {
-    format!("{}{append}", "../".repeat(depth as usize))
-  } else if enforce_relative {
-    format!("./{append}")
-  } else {
-    append
   }
 }

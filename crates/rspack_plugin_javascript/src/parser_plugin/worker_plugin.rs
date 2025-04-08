@@ -1,11 +1,10 @@
-use std::hash::Hash;
-use std::sync::LazyLock;
+use std::{hash::Hash, sync::LazyLock};
 
 use itertools::Itertools;
 use regex::Regex;
 use rspack_core::{
-  AsyncDependenciesBlock, ConstDependency, DependencyLocation, DependencyRange, EntryOptions,
-  GroupOptions, SpanExt,
+  AsyncDependenciesBlock, ConstDependency, DependencyRange, EntryOptions, GroupOptions,
+  SharedSourceMap, SpanExt,
 };
 use rspack_hash::RspackHash;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -96,11 +95,10 @@ fn add_dependencies(
     span.into(),
     parsed_path.range.into(),
   ));
+  let source_map: SharedSourceMap = parser.source_map.clone();
   let mut block = AsyncDependenciesBlock::new(
     *parser.module_identifier,
-    Some(DependencyLocation::Real(
-      Into::<DependencyRange>::into(span).with_source(parser.source_map.clone()),
-    )),
+    Into::<DependencyRange>::into(span).to_loc(Some(&source_map)),
     None,
     vec![dep],
     None,
@@ -349,6 +347,9 @@ impl JavascriptParserPlugin for WorkerPlugin {
           if let Some(callee) = call_expr.callee.as_expr() {
             parser.walk_expression(callee);
           }
+          if let Some(arg) = call_expr.args.get(1) {
+            parser.walk_expression(&arg.expr);
+          }
           true
         },
       );
@@ -384,6 +385,9 @@ impl JavascriptParserPlugin for WorkerPlugin {
             if let Some(callee) = call_expr.callee.as_expr() {
               parser.walk_expression(callee);
             }
+            if let Some(arg) = call_expr.args.get(1) {
+              parser.walk_expression(&arg.expr);
+            }
             true
           },
         );
@@ -404,6 +408,9 @@ impl JavascriptParserPlugin for WorkerPlugin {
         );
         if let Some(callee) = call_expr.callee.as_expr() {
           parser.walk_expression(callee);
+        }
+        if let Some(arg) = call_expr.args.get(1) {
+          parser.walk_expression(&arg.expr);
         }
         true
       },
@@ -439,6 +446,11 @@ impl JavascriptParserPlugin for WorkerPlugin {
               parsed_options,
             );
             parser.walk_expression(&new_expr.callee);
+            if let Some(args) = &new_expr.args
+              && let Some(arg) = args.get(1)
+            {
+              parser.walk_expression(&arg.expr);
+            }
             true
           });
       }
@@ -460,6 +472,11 @@ impl JavascriptParserPlugin for WorkerPlugin {
           parsed_options,
         );
         parser.walk_expression(&new_expr.callee);
+        if let Some(args) = &new_expr.args
+          && let Some(arg) = args.get(1)
+        {
+          parser.walk_expression(&arg.expr);
+        }
         true
       })
   }

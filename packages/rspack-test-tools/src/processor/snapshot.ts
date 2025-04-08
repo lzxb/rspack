@@ -5,8 +5,13 @@ import type {
 	Compiler as WebpackCompiler
 } from "webpack";
 
-import { escapeEOL } from "../helper";
-import type { ECompilerType, ITestContext, ITestEnv } from "../type";
+import type {
+	ECompilerType,
+	ITestContext,
+	ITestEnv,
+	TCompilerMultiStats,
+	TCompilerStats
+} from "../type";
 import { BasicProcessor, type IBasicProcessorOptions } from "./basic";
 
 export interface ISnapshotProcessorOptions<T extends ECompilerType>
@@ -34,10 +39,21 @@ export class SnapshotProcessor<
 		if (!stats || !c) return;
 
 		if (stats.hasErrors()) {
+			const errors = [];
+			if ((stats as TCompilerMultiStats<T>).stats) {
+				for (const s of (stats as TCompilerMultiStats<T>).stats) {
+					if (s.hasErrors()) {
+						errors.push(...s.compilation.errors);
+					}
+				}
+			} else {
+				const s = stats as TCompilerStats<T>;
+				errors.push(...s.compilation.errors);
+			}
+
 			throw new Error(
-				`Failed to compile in fixture ${this._options.name}, Errors: ${stats
-					.toJson({ errors: true, all: false })
-					.errors?.map(i => `${i.message}\n${i.stack}`)
+				`Failed to compile in fixture ${this._options.name}, Errors: ${errors
+					?.map(i => `${i.message}\n${i.stack}`)
 					.join("\n\n")}`
 			);
 		}
@@ -56,12 +72,12 @@ export class SnapshotProcessor<
 			.filter(([file]) => snapshotFileFilter(file))
 			.map(([file, source]) => {
 				const tag = path.extname(file).slice(1) || "txt";
-				return `\`\`\`${tag} title=${file}\n${source
-					.source()
-					.toString()}\n\`\`\``;
+				const content = this.serializeEachFile(source.source().toString());
+
+				return `\`\`\`${tag} title=${file}\n${content}\n\`\`\``;
 			});
 		fileContents.sort();
-		const content = escapeEOL(fileContents.join("\n\n"));
+		const content = fileContents.join("\n\n");
 		const snapshotPath = path.isAbsolute(this._snapshotOptions.snapshot)
 			? this._snapshotOptions.snapshot
 			: path.resolve(
@@ -70,5 +86,9 @@ export class SnapshotProcessor<
 				);
 
 		env.expect(content).toMatchFileSnapshot(snapshotPath);
+	}
+
+	serializeEachFile(content: string): string {
+		return content;
 	}
 }

@@ -1,10 +1,11 @@
 use std::hash::Hash;
 
-use rspack_core::rspack_sources::{ConcatSource, RawSource, SourceExt};
 use rspack_core::{
-  property_access, to_identifier, ApplyContext, ChunkUkey, Compilation, CompilationParams,
-  CompilerCompilation, CompilerOptions, ExportInfoProvided, LibraryOptions, ModuleGraph,
-  ModuleIdentifier, Plugin, PluginContext,
+  property_access,
+  rspack_sources::{ConcatSource, RawStringSource, SourceExt},
+  to_identifier, ApplyContext, ChunkUkey, Compilation, CompilationParams, CompilerCompilation,
+  CompilerOptions, ExportInfoProvided, LibraryOptions, ModuleGraph, ModuleIdentifier, Plugin,
+  PluginContext,
 };
 use rspack_error::{error_bail, Result};
 use rspack_hash::RspackHash;
@@ -47,14 +48,14 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.render_startup.tap(render_startup::new(self));
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   Ok(())
 }
 
 #[plugin_hook(JavascriptModulesRenderStartup for ModuleLibraryPlugin)]
-fn render_startup(
+async fn render_startup(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
@@ -70,7 +71,7 @@ fn render_startup(
   source.add(render_source.source.clone());
   let mut exports = vec![];
   if is_async {
-    source.add(RawSource::from(
+    source.add(RawStringSource::from(
       "__webpack_exports__ = await __webpack_exports__;\n",
     ));
   }
@@ -89,14 +90,14 @@ fn render_startup(
       .get_used_name(&module_graph, Some(info_name), Some(chunk.runtime()))
       .expect("name can't be empty");
     let var_name = format!("__webpack_exports__{}", to_identifier(info_name));
-    source.add(RawSource::from(format!(
+    source.add(RawStringSource::from(format!(
       "var {var_name} = __webpack_exports__{};\n",
       property_access(vec![used_name], 0)
     )));
     exports.push(format!("{var_name} as {}", info_name));
   }
   if !exports.is_empty() {
-    source.add(RawSource::from(format!(
+    source.add(RawStringSource::from(format!(
       "export {{ {} }};\n",
       exports.join(", ")
     )));

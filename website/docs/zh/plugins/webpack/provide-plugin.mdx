@@ -27,7 +27,7 @@ new rspack.ProvidePlugin({
 也可以指定完整路径：
 
 ```js
-const path = require('path');
+const path = require('node:path');
 
 new rspack.ProvidePlugin({
   identifier: path.resolve(path.join(__dirname, 'src/module1')),
@@ -88,7 +88,7 @@ jQuery('#item'); // <= 也可以工作
 // $ 被自动设置为模块 "jquery" 的导出
 ```
 
-### Lodash Map
+### Lodash map
 
 ```js
 new rspack.ProvidePlugin({

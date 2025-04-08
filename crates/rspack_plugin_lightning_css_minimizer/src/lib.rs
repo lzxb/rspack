@@ -1,28 +1,26 @@
 #![feature(let_chains)]
 
-use std::sync::LazyLock;
 use std::{
   collections::HashSet,
   hash::Hash,
-  sync::{Arc, RwLock},
+  sync::{Arc, LazyLock, RwLock},
 };
 
 pub use lightningcss::targets::Browsers;
-use lightningcss::targets::Features;
 use lightningcss::{
   printer::PrinterOptions,
   stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleSheet},
-  targets::Targets,
+  targets::{Features, Targets},
 };
 use rayon::prelude::*;
 use regex::Regex;
 use rspack_core::{
   rspack_sources::{
-    MapOptions, RawSource, SourceExt, SourceMap, SourceMapSource, SourceMapSourceOptions,
+    MapOptions, RawStringSource, SourceExt, SourceMap, SourceMapSource, SourceMapSourceOptions,
   },
   ChunkUkey, Compilation, CompilationChunkHash, CompilationProcessAssets, Plugin,
 };
-use rspack_error::{error, Diagnostic, Result};
+use rspack_error::{Diagnostic, Result, ToStringResultToRspackResultExt};
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_util::asset_condition::AssetConditions;
@@ -187,7 +185,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
             let mut sm =
               parcel_sourcemap::SourceMap::new(input_source_map.source_root().unwrap_or("/"));
             sm.add_source(filename);
-            sm.set_source_content(0, &input).map_err(|e| error!(e))?;
+            sm.set_source_content(0, &input).to_rspack_result()?;
             Ok(sm)
           })
           .transpose()?;
@@ -204,7 +202,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
               flags: parser_flags,
             },
           )
-          .map_err(|e| error!(e.to_string()))?;
+          .to_rspack_result()?;
 
           let targets = Targets {
             browsers: minimizer_options.targets,
@@ -230,7 +228,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
               targets,
               unused_symbols,
             })
-            .map_err(|e| error!(e.to_string()))?;
+            .to_rspack_result()?;
           let result = stylesheet
             .to_css(PrinterOptions {
               minify: true,
@@ -248,7 +246,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
                 focus_within: pseudo_classes.focus_within.as_deref(),
               }),
             })
-            .map_err(|e| error!(e.to_string()))?;
+            .to_rspack_result()?;
           let warnings = warnings.read().expect("should lock");
           all_warnings.write().expect("should lock").extend(
             warnings.iter().map(|e| {
@@ -265,7 +263,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
             source_map: SourceMap::from_json(
               &source_map
                 .to_json(None)
-                .map_err(|e| error!(e.to_string()))?,
+                .to_rspack_result()?,
             )
             .expect("should be able to generate source-map"),
             original_source: Some(input),
@@ -274,7 +272,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
           })
           .boxed()
         } else {
-          RawSource::from(result.code).boxed()
+          RawStringSource::from(result.code).boxed()
         };
 
         original.set_source(Some(minimized_source));

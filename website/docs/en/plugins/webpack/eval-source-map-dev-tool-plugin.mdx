@@ -32,19 +32,21 @@ Indicates whether column mappings should be used (defaults to `true`).
 
 ## Examples
 
-### Basic Use Case
+### Basic use case
 
 You can use the following code to replace the configuration option `devtool: eval-source-map` with an equivalent custom plugin configuration:
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+import { rspack } from '@rspack/core';
+
+export default {
   // ...
   devtool: false,
   plugins: [new rspack.EvalSourceMapDevToolPlugin({})],
 };
 ```
 
-### Exclude Vendor Maps
+### Exclude vendor maps
 
 The following code would exclude source maps for any modules in the `vendor.js` bundle:
 

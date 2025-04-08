@@ -9,7 +9,7 @@ use dyn_clone::{clone_trait_object, DynClone};
 use hashlink::LinkedHashSet;
 use indexmap::IndexMap;
 use rspack_error::Result;
-use rspack_sources::{BoxSource, ConcatSource, RawSource, SourceExt};
+use rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt};
 use rspack_util::ext::{DynHash, IntoAny};
 use rustc_hash::FxHasher;
 use swc_core::ecma::atoms::Atom;
@@ -140,7 +140,7 @@ impl InitFragmentKey {
       | InitFragmentKey::CommonJsExports(_)
       | InitFragmentKey::Const(_) => first(fragments),
       InitFragmentKey::ESMCompatibility | InitFragmentKey::Unique(_) => {
-        debug_assert!(fragments.len() == 1, "fragment = {:?}", self);
+        debug_assert!(fragments.len() == 1, "fragment = {self:?}");
         first(fragments)
       }
     }
@@ -157,6 +157,7 @@ fn first<C>(fragments: Vec<Box<dyn InitFragment<C>>>) -> Box<dyn InitFragment<C>
 pub trait InitFragmentRenderContext {
   fn add_runtime_requirements(&mut self, requirement: RuntimeGlobals);
   fn runtime_condition_expression(&mut self, runtime_condition: &RuntimeCondition) -> String;
+  fn returning_function(&self, return_value: &str, args: &str) -> String;
 }
 
 pub trait InitFragment<C>: IntoAny + DynHash + DynClone + Debug + Sync + Send {
@@ -235,9 +236,9 @@ pub fn render_init_fragments<C: InitFragmentRenderContext>(
   for (key, fragments) in keyed_fragments {
     let f = key.merge_fragments(fragments);
     let contents = f.contents(context)?;
-    concat_source.add(RawSource::from(contents.start));
+    concat_source.add(RawStringSource::from(contents.start));
     if let Some(end_content) = contents.end {
-      end_contents.push(RawSource::from(end_content))
+      end_contents.push(RawStringSource::from(end_content))
     }
   }
 
@@ -269,6 +270,13 @@ impl InitFragmentRenderContext for GenerateContext<'_> {
       self.runtime_requirements,
     )
   }
+
+  fn returning_function(&self, return_value: &str, args: &str) -> String {
+    self
+      .compilation
+      .runtime_template
+      .returning_function(return_value, args)
+  }
 }
 
 pub struct ChunkRenderContext;
@@ -280,6 +288,10 @@ impl InitFragmentRenderContext for ChunkRenderContext {
 
   fn runtime_condition_expression(&mut self, _runtime_condition: &RuntimeCondition) -> String {
     unreachable!("should not call runtime condition expression in chunk render context")
+  }
+
+  fn returning_function(&self, _return_value: &str, _args: &str) -> String {
+    unreachable!("should not call returning function in chunk render context")
   }
 }
 
@@ -359,7 +371,11 @@ impl<C: InitFragmentRenderContext> InitFragment<C> for ESMExportInitFragment {
         .iter()
         .map(|s| {
           let prop = property_name(&s.0)?;
-          Ok(format!("{}: function() {{ return {}; }}", prop, s.1))
+          Ok(format!(
+            "{}: {}",
+            prop,
+            context.returning_function(&s.1, "")
+          ))
         })
         .collect::<Result<Vec<_>>>()?
         .join(",\n  ")
@@ -657,7 +673,7 @@ impl<C: InitFragmentRenderContext> InitFragment<C> for ExternalModuleInitFragmen
         if imports_string.is_empty() {
           String::new()
         } else {
-          format!(", {}", imports_string)
+          format!(", {imports_string}")
         }
       );
     }

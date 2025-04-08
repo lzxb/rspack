@@ -1,5 +1,4 @@
-use std::borrow::Cow;
-
+use rspack_util::json_stringify;
 use rustc_hash::FxHashSet as HashSet;
 use serde_json::json;
 use swc_core::ecma::atoms::Atom;
@@ -8,8 +7,9 @@ use crate::{
   compile_boolean_matcher_from_lists, contextify, property_access, to_comment, to_normal_comment,
   AsyncDependenciesBlockIdentifier, ChunkGraph, Compilation, CompilerOptions, DependenciesBlock,
   DependencyId, Environment, ExportsArgument, ExportsType, FakeNamespaceObjectMode,
-  InitFragmentExt, InitFragmentKey, InitFragmentStage, Module, ModuleGraph, ModuleIdentifier,
-  NormalInitFragment, PathInfo, RuntimeCondition, RuntimeGlobals, RuntimeSpec, TemplateContext,
+  InitFragmentExt, InitFragmentKey, InitFragmentStage, Module, ModuleGraph, ModuleId,
+  ModuleIdentifier, NormalInitFragment, PathInfo, RuntimeCondition, RuntimeGlobals, RuntimeSpec,
+  TemplateContext,
 };
 
 pub fn runtime_condition_expression(
@@ -99,7 +99,7 @@ pub fn export_from_import(
   default_interop: bool,
   request: &str,
   import_var: &str,
-  mut export_name: Vec<Atom>,
+  export_name: &[Atom],
   id: &DependencyId,
   is_call: bool,
   call_context: bool,
@@ -123,6 +123,7 @@ pub fn export_from_import(
 
   let exports_type = get_exports_type(&compilation.get_module_graph(), id, &module.identifier());
 
+  let mut exclude_default_export_name = None;
   if default_interop {
     if !export_name.is_empty()
       && let Some(first_export_name) = export_name.first()
@@ -150,7 +151,7 @@ pub fn export_from_import(
           }
         }
         ExportsType::DefaultOnly | ExportsType::DefaultWithNamed => {
-          export_name = export_name[1..].to_vec();
+          exclude_default_export_name = Some(export_name[1..].to_vec());
         }
         _ => {}
       }
@@ -203,35 +204,30 @@ pub fn export_from_import(
     }
   }
 
+  let export_name = exclude_default_export_name
+    .as_deref()
+    .unwrap_or(export_name);
   if !export_name.is_empty() {
-    let used_name: Cow<Vec<Atom>> = {
-      let exports_info = compilation
-        .get_module_graph()
-        .get_exports_info(&module_identifier);
-      let used = exports_info.get_used_name(
-        &compilation.get_module_graph(),
-        *runtime,
-        crate::UsedName::Vec(export_name.clone()),
+    let exports_info = compilation
+      .get_module_graph()
+      .get_exports_info(&module_identifier);
+    let Some(used_name) = exports_info.get_used_name(
+      &compilation.get_module_graph(),
+      *runtime,
+      crate::UsedName::Vec(export_name.to_vec()),
+    ) else {
+      return format!(
+        "{} undefined",
+        to_normal_comment(&property_access(export_name, 0))
       );
-      if let Some(used) = used {
-        let used = match used {
-          crate::UsedName::Str(str) => vec![str],
-          crate::UsedName::Vec(strs) => strs,
-        };
-        Cow::Owned(used)
-      } else {
-        return format!(
-          "{} undefined",
-          to_normal_comment(&property_access(&export_name, 0))
-        );
-      }
     };
-    let comment = if *used_name != export_name {
-      to_normal_comment(&property_access(&export_name, 0))
+    let used_name = used_name.as_ref();
+    let comment = if used_name != export_name {
+      to_normal_comment(&property_access(export_name, 0))
     } else {
       String::new()
     };
-    let property = property_access(&*used_name, 0);
+    let property = property_access(used_name, 0);
     let access = format!("{import_var}{comment}{property}");
     if is_call && !call_context {
       if let Some(asi_safe) = asi_safe {
@@ -322,7 +318,7 @@ fn comment(compiler_options: &CompilerOptions, comment_options: CommentOptions) 
 pub fn module_id_expr(
   compiler_options: &CompilerOptions,
   request: &str,
-  module_id: &str,
+  module_id: &ModuleId,
 ) -> String {
   format!(
     "{}{}",
@@ -333,11 +329,7 @@ pub fn module_id_expr(
         ..Default::default()
       }
     ),
-    match module_id.parse::<i32>() {
-      Ok(id) => serde_json::to_string(&id),
-      Err(_) => serde_json::to_string(module_id),
-    }
-    .expect("should render module id")
+    json_stringify(module_id)
   )
 }
 
@@ -350,7 +342,8 @@ pub fn module_id(
   if let Some(module_identifier) = compilation
     .get_module_graph()
     .module_identifier_by_dependency_id(id)
-    && let Some(module_id) = compilation.chunk_graph.get_module_id(*module_identifier)
+    && let Some(module_id) =
+      ChunkGraph::get_module_id(&compilation.module_ids_artifact, *module_identifier)
   {
     module_id_expr(&compilation.options, request, module_id)
   } else if weak {
@@ -494,7 +487,7 @@ pub fn module_namespace_promise(
         }
         appending.push_str(
           format!(
-            ".then(function(m){{\n {}(m, {fake_type}) \n}})",
+            ".then(function(m){{\n return {}(m, {fake_type}) \n}})",
             RuntimeGlobals::CREATE_FAKE_NAMESPACE_OBJECT
           )
           .as_str(),
@@ -578,12 +571,19 @@ pub fn block_promise(
     .chunks
     .iter()
     .map(|c| compilation.chunk_by_ukey.expect_get(c))
-    .filter(|c| !c.has_runtime(&compilation.chunk_group_by_ukey) && c.id().is_some())
+    .filter(|c| {
+      !c.has_runtime(&compilation.chunk_group_by_ukey)
+        && c.id(&compilation.chunk_ids_artifact).is_some()
+    })
     .collect::<Vec<_>>();
 
   if chunks.len() == 1 {
-    let chunk_id = serde_json::to_string(chunks[0].id().expect("should have chunk.id"))
-      .expect("should able to json stringify");
+    let chunk_id = serde_json::to_string(
+      chunks[0]
+        .id(&compilation.chunk_ids_artifact)
+        .expect("should have chunk.id"),
+    )
+    .expect("should able to json stringify");
     runtime_requirements.insert(RuntimeGlobals::ENSURE_CHUNK);
 
     let fetch_priority = chunk_group
@@ -621,8 +621,11 @@ pub fn block_promise(
         .map(|c| format!(
           "{}({}{})",
           RuntimeGlobals::ENSURE_CHUNK,
-          serde_json::to_string(c.id().expect("should have chunk.id"))
-            .expect("should able to json stringify"),
+          serde_json::to_string(
+            c.id(&compilation.chunk_ids_artifact)
+              .expect("should have chunk.id")
+          )
+          .expect("should able to json stringify"),
           fetch_priority
             .map(|x| format!(r#", "{x}""#))
             .unwrap_or_default()
@@ -645,7 +648,8 @@ pub fn module_raw(
   if let Some(module_identifier) = compilation
     .get_module_graph()
     .module_identifier_by_dependency_id(id)
-    && let Some(module_id) = compilation.chunk_graph.get_module_id(*module_identifier)
+    && let Some(module_id) =
+      ChunkGraph::get_module_id(&compilation.module_ids_artifact, *module_identifier)
   {
     runtime_requirements.insert(RuntimeGlobals::REQUIRE);
     format!(
@@ -683,7 +687,7 @@ fn throw_missing_module_error_function(request: &str) -> String {
 }
 
 pub fn throw_missing_module_error_block(request: &str) -> String {
-  let e = format!("Cannot find module '{}'", request);
+  let e = format!("Cannot find module '{request}'");
   format!(
     "var e = new Error({}); e.code = 'MODULE_NOT_FOUND'; throw e;",
     json!(e)

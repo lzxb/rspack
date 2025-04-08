@@ -36,15 +36,17 @@ new webpack.EvalSourceMapDevToolPlugin(options);
 
 你可以使用以下代码来替换配置选项 `devtool: eval-source-map`，使用等效的自定义插件配置：
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+import { rspack } from '@rspack/core';
+
+export default {
   // ...
   devtool: false,
   plugins: [new rspack.EvalSourceMapDevToolPlugin({})],
 };
 ```
 
-### 排除 Vendor Maps
+### 排除 Vendor maps
 
 以下代码将排除 `vendor.js` 打包文件中的任何模块的 source map：
 

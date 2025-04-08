@@ -1,26 +1,29 @@
-use rspack_core::{AsContextDependency, Dependency};
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_core::{
-  Compilation, DependencyRange, DependencyType, ExternalRequest, ExternalType, ImportAttributes,
-  RuntimeSpec,
+  AsContextDependency, Dependency, DependencyCategory, DependencyId, DependencyRange,
+  DependencyTemplate, DependencyType, ExternalRequest, ExternalType, FactorizeInfo,
+  ImportAttributes, ModuleDependency, TemplateContext, TemplateReplaceSource,
 };
-use rspack_core::{DependencyCategory, DependencyId, DependencyTemplate};
-use rspack_core::{ModuleDependency, TemplateContext, TemplateReplaceSource};
 use rspack_plugin_javascript::dependency::create_resource_identifier_for_esm_dependency;
 use swc_core::ecma::atoms::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ModernModuleImportDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
   target_request: ExternalRequest,
   external_type: ExternalType,
   range: DependencyRange,
   attributes: Option<ImportAttributes>,
   resource_identifier: String,
+  factorize_info: FactorizeInfo,
 }
 
 impl ModernModuleImportDependency {
   pub fn new(
+    id: DependencyId,
     request: Atom,
     target_request: ExternalRequest,
     external_type: ExternalType,
@@ -30,17 +33,19 @@ impl ModernModuleImportDependency {
     let resource_identifier =
       create_resource_identifier_for_esm_dependency(request.as_str(), attributes.as_ref());
     Self {
+      id,
       request,
       target_request,
       external_type,
       range,
-      id: DependencyId::new(),
       attributes,
       resource_identifier,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ModernModuleImportDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -71,6 +76,7 @@ impl Dependency for ModernModuleImportDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for ModernModuleImportDependency {
   fn request(&self) -> &str {
     &self.request
@@ -83,8 +89,17 @@ impl ModuleDependency for ModernModuleImportDependency {
   fn set_request(&mut self, request: String) {
     self.request = request.into();
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ModernModuleImportDependency {
   fn apply(
     &self,
@@ -119,18 +134,6 @@ impl DependencyTemplate for ModernModuleImportDependency {
         None,
       );
     }
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

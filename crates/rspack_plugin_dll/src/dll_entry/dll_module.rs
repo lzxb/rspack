@@ -1,19 +1,23 @@
 use std::{borrow::Cow, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
-  impl_module_meta_info, impl_source_map_config, module_update_hash, rspack_sources::RawSource,
-  rspack_sources::Source, AsyncDependenciesBlockIdentifier, BuildContext, BuildInfo, BuildMeta,
-  BuildResult, CodeGenerationResult, Compilation, ConcatenationScope, Context, DependenciesBlock,
-  Dependency, DependencyId, EntryDependency, FactoryMeta, Module, ModuleType, RuntimeGlobals,
-  RuntimeSpec, SourceType,
+  impl_module_meta_info, impl_source_map_config, module_update_hash,
+  rspack_sources::{BoxSource, RawStringSource},
+  AsyncDependenciesBlockIdentifier, BuildContext, BuildInfo, BuildMeta, BuildResult,
+  CodeGenerationResult, Compilation, ConcatenationScope, Context, DependenciesBlock, Dependency,
+  DependencyId, EntryDependency, FactoryMeta, Module, ModuleType, RuntimeGlobals, RuntimeSpec,
+  SourceType,
 };
-use rspack_error::{impl_empty_diagnosable_trait, Diagnostic, Result};
+use rspack_error::{impl_empty_diagnosable_trait, Result};
+use rspack_hash::{RspackHash, RspackHashDigest};
 
 use super::dll_entry_dependency::DllEntryDependency;
 
 #[impl_source_map_config]
+#[cacheable]
 #[derive(Debug, Default)]
 pub struct DllModule {
   // TODO: it should be set to EntryDependency.loc
@@ -21,9 +25,9 @@ pub struct DllModule {
 
   factory_meta: Option<FactoryMeta>,
 
-  build_info: Option<BuildInfo>,
+  build_info: BuildInfo,
 
-  build_meta: Option<BuildMeta>,
+  build_meta: BuildMeta,
 
   blocks: Vec<AsyncDependenciesBlockIdentifier>,
 
@@ -52,6 +56,7 @@ impl DllModule {
   }
 }
 
+#[cacheable_dyn]
 #[async_trait]
 impl Module for DllModule {
   impl_module_meta_info!();
@@ -64,11 +69,7 @@ impl Module for DllModule {
     &[SourceType::JavaScript]
   }
 
-  fn get_diagnostics(&self) -> Vec<Diagnostic> {
-    vec![]
-  }
-
-  fn original_source(&self) -> Option<&dyn Source> {
+  fn source(&self) -> Option<&BoxSource> {
     None
   }
 
@@ -95,7 +96,7 @@ impl Module for DllModule {
     })
   }
 
-  fn code_generation(
+  async fn code_generation(
     &self,
     _compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
@@ -110,32 +111,34 @@ impl Module for DllModule {
       ..Default::default()
     };
 
-    code_generation_result = code_generation_result.with_javascript(Arc::new(RawSource::from(
-      format!("module.exports = {}", RuntimeGlobals::REQUIRE.name()),
-    )));
+    code_generation_result =
+      code_generation_result.with_javascript(Arc::new(RawStringSource::from(format!(
+        "module.exports = {}",
+        RuntimeGlobals::REQUIRE.name()
+      ))));
 
     Ok(code_generation_result)
   }
 
   fn need_build(&self) -> bool {
-    self.build_meta.is_none()
+    false
   }
 
   fn size(&self, _source_type: Option<&SourceType>, _compilation: Option<&Compilation>) -> f64 {
     12.0
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
-    mut hasher: &mut dyn std::hash::Hasher,
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
     format!("dll module {}", self.name).hash(&mut hasher);
 
-    module_update_hash(self, hasher, compilation, runtime);
+    module_update_hash(self, &mut hasher, compilation, runtime);
 
-    Ok(())
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 

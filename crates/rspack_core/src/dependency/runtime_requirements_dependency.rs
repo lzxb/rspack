@@ -1,15 +1,18 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_util::ext::DynHash;
 
 use crate::{
-  AsDependency, Compilation, DependencyTemplate, RuntimeGlobals, RuntimeSpec, TemplateContext,
+  Compilation, DependencyTemplate, RuntimeGlobals, RuntimeSpec, TemplateContext,
   TemplateReplaceSource,
 };
 
+#[cacheable]
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct RuntimeRequirementsDependency {
   pub runtime_requirements: RuntimeGlobals,
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for RuntimeRequirementsDependency {
   fn apply(
     &self,
@@ -21,10 +24,6 @@ impl DependencyTemplate for RuntimeRequirementsDependency {
       .insert(self.runtime_requirements);
   }
 
-  fn dependency_id(&self) -> Option<crate::DependencyId> {
-    None
-  }
-
   fn update_hash(
     &self,
     hasher: &mut dyn std::hash::Hasher,
@@ -34,7 +33,6 @@ impl DependencyTemplate for RuntimeRequirementsDependency {
     self.runtime_requirements.dyn_hash(hasher);
   }
 }
-impl AsDependency for RuntimeRequirementsDependency {}
 
 impl RuntimeRequirementsDependency {
   pub fn new(runtime_requirements: RuntimeGlobals) -> Self {

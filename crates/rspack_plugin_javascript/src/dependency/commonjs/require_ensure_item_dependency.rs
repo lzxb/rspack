@@ -1,14 +1,18 @@
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsPreset};
 use rspack_core::{
   AffectType, AsContextDependency, AsDependencyTemplate, Dependency, DependencyCategory,
-  DependencyId, DependencyRange, DependencyType, ModuleDependency,
+  DependencyId, DependencyRange, DependencyType, FactorizeInfo, ModuleDependency,
 };
 use rspack_util::atom::Atom;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct RequireEnsureItemDependency {
   id: DependencyId,
+  #[cacheable(with=AsPreset)]
   request: Atom,
   range: DependencyRange,
+  factorize_info: FactorizeInfo,
 }
 
 impl RequireEnsureItemDependency {
@@ -17,10 +21,12 @@ impl RequireEnsureItemDependency {
       id: DependencyId::new(),
       request,
       range,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for RequireEnsureItemDependency {
   fn id(&self) -> &rspack_core::DependencyId {
     &self.id
@@ -43,9 +49,18 @@ impl Dependency for RequireEnsureItemDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for RequireEnsureItemDependency {
   fn request(&self) -> &str {
     &self.request
+  }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
   }
 }
 

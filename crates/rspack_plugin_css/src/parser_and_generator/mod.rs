@@ -6,38 +6,37 @@ use std::{
 use indexmap::{IndexMap, IndexSet};
 use once_cell::sync::OnceCell;
 use regex::Regex;
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsCacheable, AsMap, AsOption, AsVec},
+};
 use rspack_core::{
   diagnostics::map_box_diagnostics_to_module_parse_diagnostics,
-  rspack_sources::{BoxSource, ConcatSource, RawSource, ReplaceSource, Source, SourceExt},
-  BuildMetaDefaultObject, BuildMetaExportsType, ChunkGraph, Compilation, ConstDependency,
-  CssExportsConvention, Dependency, DependencyId, DependencyRange, DependencyTemplate,
-  GenerateContext, LocalIdentName, Module, ModuleDependency, ModuleGraph, ModuleIdentifier,
-  ModuleType, NormalModule, ParseContext, ParseResult, ParserAndGenerator, RuntimeSpec, SourceType,
-  TemplateContext, UsageState,
+  remove_bom,
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, ReplaceSource, Source, SourceExt},
+  BoxDependencyTemplate, BoxModuleDependency, BuildMetaDefaultObject, BuildMetaExportsType,
+  ChunkGraph, Compilation, ConstDependency, CssExportsConvention, Dependency, DependencyId,
+  DependencyRange, DependencyType, GenerateContext, LocalIdentName, Module, ModuleGraph,
+  ModuleIdentifier, ModuleInitFragments, ModuleType, NormalModule, ParseContext, ParseResult,
+  ParserAndGenerator, RuntimeGlobals, RuntimeSpec, SourceType, TemplateContext, UsageState,
 };
-use rspack_core::{ModuleInitFragments, RuntimeGlobals};
 use rspack_error::{
   miette::Diagnostic, IntoTWithDiagnosticArray, Result, RspackSeverity, TWithDiagnosticArray,
 };
+use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::ext::DynHash;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-  dependency::CssSelfReferenceLocalIdentDependency,
-  utils::{css_modules_exports_to_string, LocalIdentOptions},
-};
-use crate::{
-  dependency::CssSelfReferenceLocalIdentReplacement,
-  utils::{export_locals_convention, unescape},
-};
-use crate::{
   dependency::{
-    CssComposeDependency, CssExportDependency, CssImportDependency, CssLocalIdentDependency,
-    CssUrlDependency,
+    CssComposeDependency, CssExportDependency, CssImportDependency, CssLayer,
+    CssLocalIdentDependency, CssMedia, CssSelfReferenceLocalIdentDependency,
+    CssSelfReferenceLocalIdentReplacement, CssSupports, CssUrlDependency,
   },
   utils::{
-    css_modules_exports_to_concatenate_module_string, css_parsing_traceable_error, normalize_url,
-    replace_module_request_prefix,
+    css_modules_exports_to_concatenate_module_string, css_modules_exports_to_string,
+    css_parsing_traceable_error, export_locals_convention, normalize_url,
+    replace_module_request_prefix, unescape, LocalIdentOptions,
   },
 };
 
@@ -53,6 +52,7 @@ pub(crate) static CSS_MODULE_SOURCE_TYPE_LIST: &[SourceType; 2] =
 pub(crate) static CSS_MODULE_EXPORTS_ONLY_SOURCE_TYPE_LIST: &[SourceType; 1] =
   &[SourceType::JavaScript];
 
+#[cacheable]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CssExport {
   pub ident: String,
@@ -72,6 +72,7 @@ fn update_css_exports(exports: &mut CssExports, name: String, css_export: CssExp
   }
 }
 
+#[cacheable]
 #[derive(Debug)]
 pub struct CssParserAndGenerator {
   pub convention: Option<CssExportsConvention>,
@@ -79,10 +80,14 @@ pub struct CssParserAndGenerator {
   pub exports_only: bool,
   pub named_exports: bool,
   pub es_module: bool,
+  #[cacheable(with=AsOption<AsMap<AsCacheable, AsVec>>)]
   pub exports: Option<CssExports>,
+  pub local_names: Option<FxHashMap<String, String>>,
   pub hot: bool,
 }
 
+#[cacheable_dyn]
+#[async_trait::async_trait]
 impl ParserAndGenerator for CssParserAndGenerator {
   fn source_types(&self) -> &[SourceType] {
     if self.exports_only {
@@ -95,12 +100,15 @@ impl ParserAndGenerator for CssParserAndGenerator {
   fn size(&self, module: &dyn Module, source_type: Option<&SourceType>) -> f64 {
     match source_type.unwrap_or(&SourceType::Css) {
       SourceType::JavaScript => 42.0,
-      SourceType::Css => module.original_source().map_or(0, |source| source.size()) as f64,
+      SourceType::Css => module.source().map_or(0, |source| source.size()) as f64,
       _ => unreachable!(),
     }
   }
 
-  fn parse(&mut self, parse_context: ParseContext) -> Result<TWithDiagnosticArray<ParseResult>> {
+  async fn parse<'a>(
+    &mut self,
+    parse_context: ParseContext<'a>,
+  ) -> Result<TWithDiagnosticArray<ParseResult>> {
     let ParseContext {
       source,
       module_type,
@@ -124,6 +132,7 @@ impl ParserAndGenerator for CssParserAndGenerator {
       BuildMetaDefaultObject::Redirect
     };
 
+    let source = remove_bom(source);
     let source_code = source.source();
     let resource_path = &resource_data.resource_path;
     let cached_source_code = OnceCell::new();
@@ -145,8 +154,8 @@ impl ParserAndGenerator for CssParserAndGenerator {
 
     let mut diagnostics: Vec<Box<dyn Diagnostic + Send + Sync + 'static>> = vec![];
     let mut dependencies: Vec<Box<dyn Dependency>> = vec![];
-    let mut presentational_dependencies: Vec<Box<dyn DependencyTemplate>> = vec![];
-    let mut code_generation_dependencies: Vec<Box<dyn ModuleDependency>> = vec![];
+    let mut presentational_dependencies: Vec<BoxDependencyTemplate> = vec![];
+    let mut code_generation_dependencies: Vec<BoxModuleDependency> = vec![];
 
     let (deps, warnings) = css_module_lexer::collect_dependencies(&source_code, mode);
     for dependency in deps {
@@ -156,7 +165,7 @@ impl ParserAndGenerator for CssParserAndGenerator {
           range,
           kind,
         } => {
-          if request.is_empty() {
+          if request.trim().is_empty() {
             continue;
           }
           let request = replace_module_request_prefix(
@@ -175,7 +184,13 @@ impl ParserAndGenerator for CssParserAndGenerator {
           dependencies.push(dep.clone());
           code_generation_dependencies.push(dep);
         }
-        css_module_lexer::Dependency::Import { request, range, .. } => {
+        css_module_lexer::Dependency::Import {
+          request,
+          range,
+          media,
+          supports,
+          layer,
+        } => {
           if request.is_empty() {
             presentational_dependencies.push(Box::new(ConstDependency::new(
               range.start,
@@ -195,6 +210,15 @@ impl ParserAndGenerator for CssParserAndGenerator {
           dependencies.push(Box::new(CssImportDependency::new(
             request.to_string(),
             DependencyRange::new(range.start, range.end),
+            media.map(|s| s.to_string()),
+            supports.map(|s| s.to_string()),
+            layer.map(|s| {
+              if s.is_empty() {
+                CssLayer::Anonymous
+              } else {
+                CssLayer::Named(s.to_string())
+              }
+            }),
           )));
         }
         css_module_lexer::Dependency::Replace { content, range } => presentational_dependencies
@@ -207,6 +231,8 @@ impl ParserAndGenerator for CssParserAndGenerator {
         css_module_lexer::Dependency::LocalClass { name, range, .. }
         | css_module_lexer::Dependency::LocalId { name, range, .. } => {
           let (_prefix, name) = name.split_at(1); // split '#' or '.'
+          let name = unescape(name);
+
           let local_ident = LocalIdentOptions::new(
             resource_data,
             self
@@ -215,13 +241,14 @@ impl ParserAndGenerator for CssParserAndGenerator {
               .expect("should have local_ident_name for module_type css/auto or css/module"),
             compiler_options,
           )
-          .get_local_ident(name);
+          .get_local_ident(&name)
+          .await?;
           let convention = self
             .convention
             .as_ref()
             .expect("should have local_ident_name for module_type css/auto or css/module");
           let exports = self.exports.get_or_insert_default();
-          let convention_names = export_locals_convention(name, convention);
+          let convention_names = export_locals_convention(&name, convention);
           for name in convention_names.iter() {
             update_css_exports(
               exports,
@@ -233,6 +260,10 @@ impl ParserAndGenerator for CssParserAndGenerator {
               },
             );
           }
+
+          let local_names = self.local_names.get_or_insert_default();
+          local_names.insert(name.into_owned(), local_ident.clone());
+
           dependencies.push(Box::new(CssLocalIdentDependency::new(
             local_ident,
             convention_names,
@@ -241,6 +272,7 @@ impl ParserAndGenerator for CssParserAndGenerator {
           )));
         }
         css_module_lexer::Dependency::LocalKeyframes { name, range, .. } => {
+          let name = unescape(name);
           let local_ident = LocalIdentOptions::new(
             resource_data,
             self
@@ -249,13 +281,14 @@ impl ParserAndGenerator for CssParserAndGenerator {
               .expect("should have local_ident_name for module_type css/auto or css/module"),
             compiler_options,
           )
-          .get_local_ident(name);
+          .get_local_ident(&name)
+          .await?;
           let exports = self.exports.get_or_insert_default();
           let convention = self
             .convention
             .as_ref()
             .expect("should have local_ident_name for module_type css/auto or css/module");
-          let convention_names = export_locals_convention(name, convention);
+          let convention_names = export_locals_convention(&name, convention);
           for name in convention_names.iter() {
             update_css_exports(
               exports,
@@ -277,6 +310,7 @@ impl ParserAndGenerator for CssParserAndGenerator {
           )));
         }
         css_module_lexer::Dependency::LocalKeyframesDecl { name, range, .. } => {
+          let name = unescape(name);
           let local_ident = LocalIdentOptions::new(
             resource_data,
             self
@@ -285,13 +319,14 @@ impl ParserAndGenerator for CssParserAndGenerator {
               .expect("should have local_ident_name for module_type css/auto or css/module"),
             compiler_options,
           )
-          .get_local_ident(name);
+          .get_local_ident(&name)
+          .await?;
           let exports = self.exports.get_or_insert_default();
           let convention = self
             .convention
             .as_ref()
             .expect("should have local_ident_name for module_type css/auto or css/module");
-          let convention_names = export_locals_convention(name, convention);
+          let convention_names = export_locals_convention(&name, convention);
           for name in convention_names.iter() {
             update_css_exports(
               exports,
@@ -303,6 +338,10 @@ impl ParserAndGenerator for CssParserAndGenerator {
               },
             );
           }
+
+          let local_names = self.local_names.get_or_insert_default();
+          local_names.insert(name.into_owned(), local_ident.clone());
+
           dependencies.push(Box::new(CssLocalIdentDependency::new(
             local_ident.clone(),
             convention_names,
@@ -316,6 +355,15 @@ impl ParserAndGenerator for CssParserAndGenerator {
           from,
           range,
         } => {
+          let local_classes = local_classes
+            .into_iter()
+            .map(|s| unescape(s).to_string())
+            .collect::<Vec<_>>();
+          let names = names
+            .into_iter()
+            .map(|s| unescape(s).to_string())
+            .collect::<Vec<_>>();
+
           let mut dep_id = None;
           if let Some(from) = from
             && from != "global"
@@ -323,31 +371,32 @@ impl ParserAndGenerator for CssParserAndGenerator {
             let from = from.trim_matches(|c| c == '\'' || c == '"');
             let dep = CssComposeDependency::new(
               from.to_string(),
-              names.iter().map(|s| (*s).into()).collect(),
+              names.iter().map(|s| s.to_owned().into()).collect(),
               DependencyRange::new(range.start, range.end),
             );
             dep_id = Some(*dep.id());
             dependencies.push(Box::new(dep));
           } else if from.is_none() {
             dependencies.push(Box::new(CssSelfReferenceLocalIdentDependency::new(
-              names.iter().map(|s| (*s).into()).collect(),
+              names.iter().map(|s| s.to_string()).collect(),
               vec![],
             )));
           }
+
           let exports = self.exports.get_or_insert_default();
           for name in names {
-            for &local_class in local_classes.iter() {
-              if let Some(existing) = exports.get(name)
+            for local_class in local_classes.iter() {
+              if let Some(existing) = exports.get(name.as_str())
                 && from.is_none()
               {
                 let existing = existing.clone();
                 exports
-                  .get_mut(local_class)
+                  .get_mut(local_class.as_str())
                   .expect("composes local class must already added to exports")
                   .extend(existing);
               } else {
                 exports
-                  .get_mut(local_class)
+                  .get_mut(local_class.as_str())
                   .expect("composes local class must already added to exports")
                   .insert(CssExport {
                     ident: name.to_string(),
@@ -420,7 +469,7 @@ impl ParserAndGenerator for CssParserAndGenerator {
   }
 
   #[allow(clippy::unwrap_in_result)]
-  fn generate(
+  async fn generate(
     &self,
     source: &BoxSource,
     module: &dyn rspack_core::Module,
@@ -445,21 +494,57 @@ impl ParserAndGenerator for CssParserAndGenerator {
           data: generate_context.data,
         };
 
+        let module_graph = compilation.get_module_graph();
         module.get_dependencies().iter().for_each(|id| {
-          if let Some(dependency) = compilation
-            .get_module_graph()
+          let dep = module_graph
             .dependency_by_id(id)
-            .expect("should have dependency")
-            .as_dependency_template()
-          {
-            dependency.apply(&mut source, &mut context)
+            .expect("should have dependency");
+
+          if let Some(dependency) = dep.as_dependency_template() {
+            if let Some(template) = compilation.get_dependency_template(dependency) {
+              template.render(dependency, &mut source, &mut context)
+            } else {
+              dependency.apply(&mut source, &mut context)
+            }
           }
         });
 
+        for conn in module_graph.get_incoming_connections(&module.identifier()) {
+          let Some(dep) = module_graph.dependency_by_id(&conn.dependency_id) else {
+            continue;
+          };
+
+          if matches!(dep.dependency_type(), DependencyType::CssImport) {
+            let Some(css_import_dep) = dep.downcast_ref::<CssImportDependency>() else {
+              panic!(
+                "dependency with type DependencyType::CssImport should only be CssImportDependency"
+              );
+            };
+
+            if let Some(media) = css_import_dep.media() {
+              let media = CssMedia(media.to_string());
+              context.data.insert(media);
+            }
+
+            if let Some(supports) = css_import_dep.supports() {
+              let supports = CssSupports(supports.to_string());
+              context.data.insert(supports);
+            }
+
+            if let Some(layer) = css_import_dep.layer() {
+              context.data.insert(layer.clone());
+            }
+          }
+        }
+
         if let Some(dependencies) = module.get_presentational_dependencies() {
-          dependencies
-            .iter()
-            .for_each(|dependency| dependency.apply(&mut source, &mut context));
+          dependencies.iter().for_each(|dependency| {
+            if let Some(template) = compilation.get_dependency_template(dependency.as_ref()) {
+              template.render(dependency.as_ref(), &mut source, &mut context)
+            } else {
+              dependency.apply(&mut source, &mut context)
+            }
+          });
         };
 
         generate_context.concatenation_scope = context.concatenation_scope.take();
@@ -473,9 +558,16 @@ impl ParserAndGenerator for CssParserAndGenerator {
           let mut concate_source = ConcatSource::default();
           if let Some(ref exports) = self.exports {
             let mg = generate_context.compilation.get_module_graph();
-            let unused_exports =
-              get_unused_local_ident(exports, module.identifier(), generate_context.runtime, &mg);
-            generate_context.data.insert(unused_exports);
+            if let Some(local_names) = &self.local_names {
+              let unused_exports = get_unused_local_ident(
+                exports,
+                local_names,
+                module.identifier(),
+                generate_context.runtime,
+                &mg,
+              );
+              generate_context.data.insert(unused_exports);
+            }
             let exports =
               get_used_exports(exports, module.identifier(), generate_context.runtime, &mg);
 
@@ -501,37 +593,30 @@ impl ParserAndGenerator for CssParserAndGenerator {
             ("", "", "")
           };
           if let Some(exports) = &self.exports {
-            let unused_exports =
-              get_unused_local_ident(exports, module.identifier(), generate_context.runtime, &mg);
-            generate_context.data.insert(unused_exports);
+            if let Some(local_names) = &self.local_names {
+              let unused_exports = get_unused_local_ident(
+                exports,
+                local_names,
+                module.identifier(),
+                generate_context.runtime,
+                &mg,
+              );
+              generate_context.data.insert(unused_exports);
+            }
 
             let exports =
               get_used_exports(exports, module.identifier(), generate_context.runtime, &mg);
 
-            if with_hmr {
-              format!(
-                "{}\nmodule.hot.accept();\n",
-                css_modules_exports_to_string(
-                  exports,
-                  module,
-                  generate_context.compilation,
-                  generate_context.runtime_requirements,
-                  ns_obj,
-                  left,
-                  right,
-                )?
-              )
-            } else {
-              css_modules_exports_to_string(
-                exports,
-                module,
-                generate_context.compilation,
-                generate_context.runtime_requirements,
-                ns_obj,
-                left,
-                right,
-              )?
-            }
+            css_modules_exports_to_string(
+              exports,
+              module,
+              generate_context.compilation,
+              generate_context.runtime_requirements,
+              ns_obj,
+              left,
+              right,
+              with_hmr,
+            )?
           } else {
             format!(
               "{}{}module.exports = {{}}{};\n{}",
@@ -552,7 +637,7 @@ impl ParserAndGenerator for CssParserAndGenerator {
             .runtime_requirements
             .insert(RuntimeGlobals::MAKE_NAMESPACE_OBJECT);
         }
-        Ok(RawSource::from(exports).boxed())
+        Ok(RawStringSource::from(exports).boxed())
       }
       _ => panic!(
         "Unsupported source type: {:?}",
@@ -578,15 +663,15 @@ impl ParserAndGenerator for CssParserAndGenerator {
     }
   }
 
-  fn update_hash(
+  async fn get_runtime_hash(
     &self,
     _module: &NormalModule,
-    hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
+    compilation: &Compilation,
     _runtime: Option<&RuntimeSpec>,
-  ) -> Result<()> {
-    self.es_module.dyn_hash(hasher);
-    Ok(())
+  ) -> Result<RspackHashDigest> {
+    let mut hasher = RspackHash::from(&compilation.options.output);
+    self.es_module.dyn_hash(&mut hasher);
+    Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }
 
@@ -618,6 +703,7 @@ pub struct CodeGenerationDataUnusedLocalIdent {
 
 fn get_unused_local_ident(
   exports: &CssExports,
+  local_names: &FxHashMap<String, String>,
   identifier: ModuleIdentifier,
   runtime: Option<&RuntimeSpec>,
   mg: &ModuleGraph,
@@ -634,11 +720,7 @@ fn get_unused_local_ident(
           false
         }
       })
-      .flat_map(|(_, exports)| {
-        exports
-          .iter()
-          .map(|export| unescape(&export.ident).into_owned())
-      })
+      .filter_map(|(export_name, _)| local_names.get(export_name).cloned())
       .collect(),
   }
 }

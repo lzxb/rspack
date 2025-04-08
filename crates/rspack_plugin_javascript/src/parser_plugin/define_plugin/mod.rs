@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::parser_and_generator::JavaScriptParserAndGenerator;
 
-type DefineValue = HashMap<String, Value>;
+pub type DefineValue = HashMap<String, Value>;
 
 const VALUE_DEP_PREFIX: &str = "webpack/DefinePlugin ";
 
@@ -85,7 +85,7 @@ async fn compilation(
 }
 
 #[plugin_hook(NormalModuleFactoryParser for DefinePlugin)]
-fn nmf_parser(
+async fn nmf_parser(
   &self,
   module_type: &ModuleType,
   parser: &mut dyn ParserAndGenerator,

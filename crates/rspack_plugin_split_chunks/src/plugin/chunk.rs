@@ -1,9 +1,7 @@
 use rspack_collections::{DatabaseItem, UkeySet};
-use rspack_core::incremental::Mutation;
-use rspack_core::{Chunk, ChunkUkey, Compilation};
+use rspack_core::{incremental::Mutation, Chunk, ChunkUkey, Compilation};
 
-use crate::module_group::ModuleGroup;
-use crate::SplitChunksPlugin;
+use crate::{module_group::ModuleGroup, SplitChunksPlugin};
 
 fn put_split_chunk_reason(
   chunk_reason: &mut Option<String>,
@@ -158,7 +156,7 @@ impl SplitChunksPlugin {
   }
 
   /// This de-duplicated each module fro other chunks, make sure there's only one copy of each module.
-  #[tracing::instrument(skip_all)]
+  // #[tracing::instrument(skip_all)]
   pub(crate) fn move_modules_to_new_chunk_and_remove_from_old_chunks(
     &self,
     item: &ModuleGroup,
@@ -167,6 +165,15 @@ impl SplitChunksPlugin {
     compilation: &mut Compilation,
   ) {
     for module_identifier in &item.modules {
+      if let Some(module) = compilation.module_by_identifier(module_identifier) {
+        if module
+          .chunk_condition(&new_chunk, compilation)
+          .is_some_and(|condition| !condition)
+        {
+          continue;
+        }
+      }
+
       // First, we remove modules from old chunks
 
       // Remove module from old chunks
@@ -187,7 +194,7 @@ impl SplitChunksPlugin {
   /// create a connection between the `new_chunk` and `original_chunks`.
   /// Thus, if `original_chunks` want to know which chunk contains moved modules,
   /// it could easily find out.
-  #[tracing::instrument(skip_all)]
+  // #[tracing::instrument(skip_all)]
   pub(crate) fn split_from_original_chunks(
     &self,
     _item: &ModuleGroup,
@@ -198,10 +205,12 @@ impl SplitChunksPlugin {
     let new_chunk_ukey = new_chunk;
     for original_chunk_ukey in original_chunks {
       debug_assert!(&new_chunk_ukey != original_chunk_ukey);
-      let [new_chunk, original_chunk] = compilation
+      let [Some(new_chunk), Some(original_chunk)] = compilation
         .chunk_by_ukey
         .get_many_mut([&new_chunk_ukey, original_chunk_ukey])
-        .expect("split_from_original_chunks failed");
+      else {
+        panic!("split_from_original_chunks failed")
+      };
       original_chunk.split(new_chunk, &mut compilation.chunk_group_by_ukey);
       if let Some(mutations) = compilation.incremental.mutations_write() {
         mutations.add(Mutation::ChunkSplit {

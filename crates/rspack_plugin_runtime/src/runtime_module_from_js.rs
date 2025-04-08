@@ -1,21 +1,23 @@
 use std::sync::Arc;
 
-use derivative::Derivative;
+use derive_more::Debug;
+use futures::future::BoxFuture;
+use rspack_cacheable::with::Unsupported;
 use rspack_collections::Identifier;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   Compilation, RuntimeModule, RuntimeModuleStage,
 };
 
-type GenerateFn = Arc<dyn Fn() -> rspack_error::Result<String> + Send + Sync>;
+type GenerateFn = Arc<dyn Fn() -> BoxFuture<'static, rspack_error::Result<String>> + Send + Sync>;
 
 #[impl_runtime_module]
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct RuntimeModuleFromJs {
   pub name: String,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
+  #[cacheable(with=Unsupported)]
   pub generator: GenerateFn,
   pub full_hash: bool,
   pub dependent_hash: bool,
@@ -23,14 +25,15 @@ pub struct RuntimeModuleFromJs {
   pub stage: RuntimeModuleStage,
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for RuntimeModuleFromJs {
   fn name(&self) -> Identifier {
     Identifier::from(format!("webpack/runtime/{}", self.name))
   }
 
-  fn generate(&self, _: &Compilation) -> rspack_error::Result<BoxSource> {
-    let res = (self.generator)()?;
-    Ok(RawSource::from(res).boxed())
+  async fn generate(&self, _: &Compilation) -> rspack_error::Result<BoxSource> {
+    let res = (self.generator)().await?;
+    Ok(RawStringSource::from(res).boxed())
   }
 
   fn full_hash(&self) -> bool {

@@ -1,20 +1,18 @@
 use std::{borrow::Cow, hash::Hash};
 
 use rspack_core::{
-  rspack_sources::{ConcatSource, RawSource, SourceExt},
+  rspack_sources::{ConcatSource, RawStringSource, SourceExt},
   ApplyContext, Chunk, ChunkUkey, Compilation, CompilationAdditionalChunkRuntimeRequirements,
   CompilationParams, CompilerCompilation, CompilerOptions, ExternalModule, ExternalRequest,
-  FilenameTemplate, LibraryAuxiliaryComment, LibraryCustomUmdObject, LibraryName,
-  LibraryNonUmdObject, LibraryOptions, LibraryType, PathData, Plugin, PluginContext,
-  RuntimeGlobals, SourceType,
+  Filename, LibraryAuxiliaryComment, LibraryCustomUmdObject, LibraryName, LibraryNonUmdObject,
+  LibraryOptions, LibraryType, PathData, Plugin, PluginContext, RuntimeGlobals, SourceType,
 };
-use rspack_error::{error, Result};
+use rspack_error::{error, Result, ToStringResultToRspackResultExt};
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_plugin_javascript::{
   JavascriptModulesChunkHash, JavascriptModulesRender, JsPlugin, RenderSource,
 };
-use rspack_util::infallible::ResultInfallibleExt as _;
 
 use crate::utils::{external_arguments, externals_dep_array, get_options_for_chunk};
 
@@ -86,14 +84,14 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.render.tap(render::new(self));
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   Ok(())
 }
 
 #[plugin_hook(JavascriptModulesRender for UmdLibraryPlugin)]
-fn render(
+async fn render(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
@@ -143,7 +141,7 @@ fn render(
   let define = if let (Some(amd), Some(_)) = &(&names.amd, named_define) {
     format!(
       "define({}, {}, {amd_factory});\n",
-      library_name(&[amd.to_string()], chunk, compilation),
+      library_name(&[amd.to_string()], chunk, compilation).await?,
       externals_dep_array(&required_externals)?
     )
   } else {
@@ -153,20 +151,20 @@ fn render(
     )
   };
 
+  let name = if let Some(commonjs) = &names.commonjs {
+    library_name(&[commonjs.clone()], chunk, compilation).await?
+  } else if let Some(root) = &names.root {
+    library_name(root, chunk, compilation).await?
+  } else {
+    "".to_string()
+  };
+
   let factory = if names.commonjs.is_some() || names.root.is_some() {
     let commonjs_code = format!(
       "{}
       exports[{}] = factory({});\n",
       get_auxiliary_comment("commonjs", auxiliary_comment),
-      names
-        .commonjs
-        .clone()
-        .map(|commonjs| library_name(&[commonjs], chunk, compilation))
-        .or_else(|| names
-          .root
-          .clone()
-          .map(|root| library_name(&root, chunk, compilation)))
-        .unwrap_or_default(),
+      name,
       externals_require_array("commonjs", &externals)?,
     );
     let root_code = format!(
@@ -184,7 +182,8 @@ fn render(
         ),
         chunk,
         compilation,
-      ),
+      )
+      .await?,
       externals_root_array(&externals)?
     );
     format!(
@@ -213,10 +212,10 @@ fn render(
   };
 
   let mut source = ConcatSource::default();
-  source.add(RawSource::from(
+  source.add(RawStringSource::from(
     "(function webpackUniversalModuleDefinition(root, factory) {\n",
   ));
-  source.add(RawSource::from(format!(
+  source.add(RawStringSource::from(format!(
     r#"{}
       if(typeof exports === 'object' && typeof module === 'object') {{
           module.exports = factory({});
@@ -224,7 +223,7 @@ fn render(
     get_auxiliary_comment("commonjs2", auxiliary_comment),
     externals_require_array("commonjs2", &externals)?
   )));
-  source.add(RawSource::from(format!(
+  source.add(RawStringSource::from(format!(
     "else if(typeof define === 'function' && define.amd) {{
           {}
           {define}
@@ -240,7 +239,7 @@ fn render(
     },
   )));
   source.add(render_source.source.clone());
-  source.add(RawSource::from("\n})"));
+  source.add(RawStringSource::from_static("\n})"));
   render_source.source = source.boxed();
   Ok(())
 }
@@ -261,7 +260,7 @@ async fn js_chunk_hash(
 }
 
 #[plugin_hook(CompilationAdditionalChunkRuntimeRequirements for UmdLibraryPlugin)]
-fn additional_chunk_runtime_requirements(
+async fn additional_chunk_runtime_requirements(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,
@@ -295,33 +294,37 @@ impl Plugin for UmdLibraryPlugin {
   }
 }
 
-fn library_name(v: &[String], chunk: &Chunk, compilation: &Compilation) -> String {
+async fn library_name(v: &[String], chunk: &Chunk, compilation: &Compilation) -> Result<String> {
   let value =
     serde_json::to_string(v.last().expect("should have last")).expect("invalid module_id");
-  replace_keys(value, chunk, compilation)
+  replace_keys(value, chunk, compilation).await
 }
 
-fn replace_keys(v: String, chunk: &Chunk, compilation: &Compilation) -> String {
+async fn replace_keys(v: String, chunk: &Chunk, compilation: &Compilation) -> Result<String> {
   compilation
     .get_path(
-      &FilenameTemplate::from(v),
+      &Filename::from(v),
       PathData::default()
-        .chunk_id_optional(chunk.id())
+        .chunk_id_optional(
+          chunk
+            .id(&compilation.chunk_ids_artifact)
+            .map(|id| id.as_str()),
+        )
         .chunk_hash_optional(chunk.rendered_hash(
-          &compilation.chunk_hashes_results,
+          &compilation.chunk_hashes_artifact,
           compilation.options.output.hash_digest_length,
         ))
-        .chunk_name_optional(chunk.name_for_filename_template())
+        .chunk_name_optional(chunk.name_for_filename_template(&compilation.chunk_ids_artifact))
         .content_hash_optional(chunk.rendered_content_hash_by_source_type(
-          &compilation.chunk_hashes_results,
+          &compilation.chunk_hashes_artifact,
           &SourceType::JavaScript,
           compilation.options.output.hash_digest_length,
         )),
     )
-    .always_ok()
+    .await
 }
 
-fn externals_require_array(typ: &str, externals: &[&ExternalModule]) -> Result<String> {
+fn externals_require_array(external_type: &str, externals: &[&ExternalModule]) -> Result<String> {
   Ok(
     externals
       .iter()
@@ -329,12 +332,11 @@ fn externals_require_array(typ: &str, externals: &[&ExternalModule]) -> Result<S
         let request = match &m.request {
           ExternalRequest::Single(r) => r,
           ExternalRequest::Map(map) => map
-            .get(typ)
-            .ok_or_else(|| error!("Missing external configuration for type: {typ}"))?,
+            .get(external_type)
+            .ok_or_else(|| error!("Missing external configuration for type: {external_type}"))?,
         };
         // TODO: check if external module is optional
-        let primary =
-          serde_json::to_string(request.primary()).map_err(|e| error!(e.to_string()))?;
+        let primary = serde_json::to_string(request.primary()).to_rspack_result()?;
         let expr = if let Some(rest) = request.rest() {
           format!("require({}){}", primary, &accessor_to_object_access(rest))
         } else {
@@ -352,13 +354,13 @@ fn externals_root_array(modules: &[&ExternalModule]) -> Result<String> {
     modules
       .iter()
       .map(|m| {
-        let typ = "root";
+        let external_type = "root";
         let request = match &m.request {
           ExternalRequest::Single(r) => r.iter(),
           ExternalRequest::Map(map) => map
-            .get(typ)
+            .get(external_type)
             .map(|r| r.iter())
-            .ok_or_else(|| error!("Missing external configuration for type: {typ}"))?,
+            .ok_or_else(|| error!("Missing external configuration for type: {external_type}"))?,
         };
         Ok(format!("root{}", accessor_to_object_access(request)))
       })

@@ -1,4 +1,4 @@
-const rspack = require("@rspack/core");
+const { rspack } = require("@rspack/core");
 
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
@@ -6,11 +6,9 @@ module.exports = {
 	target: "web",
 	optimization: {
 		minimize: true,
-		minimizer: [
-			new rspack.LightningCssMinimizerRspackPlugin(),
-		]
+		minimizer: [new rspack.LightningCssMinimizerRspackPlugin()]
 	},
 	experiments: {
-		css: true,
+		css: true
 	}
 };

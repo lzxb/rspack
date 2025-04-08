@@ -1,16 +1,16 @@
 use std::hash::Hash;
 
-use rspack_core::rspack_sources::{ConcatSource, RawSource, SourceExt};
 use rspack_core::{
+  rspack_sources::{ConcatSource, RawStringSource, SourceExt},
   ApplyContext, ChunkUkey, Compilation, CompilationAdditionalChunkRuntimeRequirements,
   CompilationParams, CompilerCompilation, CompilerOptions, Plugin, PluginContext, RuntimeGlobals,
 };
 use rspack_error::Result;
 use rspack_hash::RspackHash;
 use rspack_hook::{plugin, plugin_hook};
-use rspack_plugin_javascript::runtime::render_chunk_runtime_modules;
 use rspack_plugin_javascript::{
-  JavascriptModulesChunkHash, JavascriptModulesRenderChunk, JsPlugin, RenderSource,
+  runtime::render_chunk_runtime_modules, JavascriptModulesChunkHash, JavascriptModulesRenderChunk,
+  JsPlugin, RenderSource,
 };
 use rspack_util::json_stringify;
 
@@ -31,14 +31,14 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   hooks.render_chunk.tap(render_chunk::new(self));
   Ok(())
 }
 
 #[plugin_hook(CompilationAdditionalChunkRuntimeRequirements for CommonJsChunkFormatPlugin)]
-fn additional_chunk_runtime_requirements(
+async fn additional_chunk_runtime_requirements(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,
@@ -90,35 +90,35 @@ async fn js_chunk_hash(
 }
 
 #[plugin_hook(JavascriptModulesRenderChunk for CommonJsChunkFormatPlugin)]
-fn render_chunk(
+async fn render_chunk(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
   render_source: &mut RenderSource,
 ) -> Result<()> {
-  let hooks = JsPlugin::get_compilation_hooks(compilation);
+  let hooks = JsPlugin::get_compilation_hooks(compilation.id());
   let chunk = compilation.chunk_by_ukey.expect_get(chunk_ukey);
-  let base_chunk_output_name = get_chunk_output_name(chunk, compilation)?;
+  let base_chunk_output_name = get_chunk_output_name(chunk, compilation).await?;
   let mut sources = ConcatSource::default();
-  sources.add(RawSource::from(format!(
+  sources.add(RawStringSource::from(format!(
     "exports.ids = ['{}'];\n",
-    &chunk.expect_id().to_string()
+    &chunk.expect_id(&compilation.chunk_ids_artifact)
   )));
-  sources.add(RawSource::from("exports.modules = "));
+  sources.add(RawStringSource::from_static("exports.modules = "));
   sources.add(render_source.source.clone());
-  sources.add(RawSource::from(";\n"));
+  sources.add(RawStringSource::from_static(";\n"));
   if compilation
     .chunk_graph
     .has_chunk_runtime_modules(chunk_ukey)
   {
-    sources.add(RawSource::from("exports.runtime = "));
-    sources.add(render_chunk_runtime_modules(compilation, chunk_ukey)?);
-    sources.add(RawSource::from(";\n"));
+    sources.add(RawStringSource::from_static("exports.runtime = "));
+    sources.add(render_chunk_runtime_modules(compilation, chunk_ukey).await?);
+    sources.add(RawStringSource::from_static(";\n"));
   }
 
   if chunk.has_entry_module(&compilation.chunk_graph) {
-    let runtime_chunk_output_name = get_runtime_chunk_output_name(compilation, chunk_ukey)?;
-    sources.add(RawSource::from(format!(
+    let runtime_chunk_output_name = get_runtime_chunk_output_name(compilation, chunk_ukey).await?;
+    sources.add(RawStringSource::from(format!(
       "// load runtime\nvar {} = require({});\n",
       RuntimeGlobals::REQUIRE,
       json_stringify(&get_relative_path(
@@ -126,7 +126,7 @@ fn render_chunk(
         &runtime_chunk_output_name
       ))
     )));
-    sources.add(RawSource::from(format!(
+    sources.add(RawStringSource::from(format!(
       "{}(exports)\n",
       RuntimeGlobals::EXTERNAL_INSTALL_CHUNK,
     )));
@@ -137,22 +137,25 @@ fn render_chunk(
     let start_up_source = generate_entry_startup(compilation, chunk_ukey, entries, false);
     let last_entry_module = entries
       .keys()
-      .last()
+      .next_back()
       .expect("should have last entry module");
     let mut startup_render_source = RenderSource {
       source: start_up_source,
     };
-    hooks.render_startup.call(
-      compilation,
-      chunk_ukey,
-      last_entry_module,
-      &mut startup_render_source,
-    )?;
+    hooks
+      .render_startup
+      .call(
+        compilation,
+        chunk_ukey,
+        last_entry_module,
+        &mut startup_render_source,
+      )
+      .await?;
     sources.add(startup_render_source.source);
     render_source.source = ConcatSource::new([
-      RawSource::from("(function() {\n").boxed(),
+      RawStringSource::from_static("(function() {\n").boxed(),
       sources.boxed(),
-      RawSource::from("\n})()").boxed(),
+      RawStringSource::from_static("\n})()").boxed(),
     ])
     .boxed();
     return Ok(());

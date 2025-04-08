@@ -1,8 +1,7 @@
-use cow_utils::CowUtils;
 use rspack_collections::Identifier;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   Compilation, RuntimeModule,
 };
 
@@ -19,19 +18,27 @@ impl RspackVersionRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for RspackVersionRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
   }
 
-  fn generate(&self, _: &Compilation) -> rspack_error::Result<BoxSource> {
-    Ok(
-      RawSource::from(
-        include_str!("runtime/get_version.js")
-          .cow_replace("$VERSION$", &self.version)
-          .into_owned(),
-      )
-      .boxed(),
-    )
+  fn template(&self) -> Vec<(String, String)> {
+    vec![(
+      self.id.to_string(),
+      include_str!("runtime/get_version.ejs").to_string(),
+    )]
+  }
+
+  async fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+    let source = compilation.runtime_template.render(
+      &self.id,
+      Some(serde_json::json!({
+        "_version": format!("\"{}\"", &self.version),
+      })),
+    )?;
+
+    Ok(RawStringSource::from(source).boxed())
   }
 }

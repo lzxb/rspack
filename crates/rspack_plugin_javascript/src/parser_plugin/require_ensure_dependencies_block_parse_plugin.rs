@@ -2,8 +2,8 @@ use std::borrow::Cow;
 
 use either::Either;
 use rspack_core::{
-  AsyncDependenciesBlock, BoxDependency, ChunkGroupOptions, ConstDependency, DependencyLocation,
-  DependencyRange, GroupOptions, SpanExt,
+  AsyncDependenciesBlock, BoxDependency, ChunkGroupOptions, ConstDependency, DependencyRange,
+  GroupOptions, SharedSourceMap, SpanExt,
 };
 use swc_core::{
   common::Spanned,
@@ -58,7 +58,7 @@ impl JavascriptParserPlugin for RequireEnsureDependenciesBlockParserPlugin {
     if expr
       .callee
       .as_expr()
-      .map_or(true, |expr| !is_require_ensure(&**expr))
+      .is_none_or(|expr| !is_require_ensure(&**expr))
     {
       return None;
     }
@@ -112,20 +112,25 @@ impl JavascriptParserPlugin for RequireEnsureDependenciesBlockParserPlugin {
         None
       },
     ))];
-    /* TODO:
-     * 1. Webpack calls `parser.in_scope`.
-     * 2. Webpack sets `parser.state.current = depBlock`, but rspack doesn't support nested block yet.
-     */
-    for item in dependencies_items.iter() {
-      if let Some(item) = item.as_string() {
-        deps.push(Box::new(RequireEnsureItemDependency::new(
-          item.as_str().into(),
-          expr.span.into(),
-        )));
-      } else {
-        return None;
+    // TODO: Webpack sets `parser.state.current = depBlock`, but rspack doesn't support nested block yet.
+    let mut failed = false;
+    parser.in_function_scope(true, std::iter::empty(), |_| {
+      for item in dependencies_items.iter() {
+        if let Some(item) = item.as_string() {
+          deps.push(Box::new(RequireEnsureItemDependency::new(
+            item.as_str().into(),
+            expr.span.into(),
+          )));
+        } else {
+          failed = true;
+        }
       }
+    });
+    if failed {
+      return None;
     }
+    let old_deps = std::mem::take(&mut parser.dependencies);
+
     if let Some(success_expr) = &success_expr {
       match success_expr.func {
         Either::Left(func) => {
@@ -139,12 +144,12 @@ impl JavascriptParserPlugin for RequireEnsureDependenciesBlockParserPlugin {
         },
       }
     }
+    deps.extend(std::mem::replace(&mut parser.dependencies, old_deps));
 
+    let source_map: SharedSourceMap = parser.source_map.clone();
     let mut block = AsyncDependenciesBlock::new(
       *parser.module_identifier,
-      Some(DependencyLocation::Real(
-        Into::<DependencyRange>::into(expr.span).with_source(parser.source_map.clone()),
-      )),
+      Into::<DependencyRange>::into(expr.span).to_loc(Some(&source_map)),
       None,
       deps,
       None,

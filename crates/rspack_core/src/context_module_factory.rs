@@ -1,8 +1,8 @@
 use std::{borrow::Cow, fs, sync::Arc};
 
 use cow_utils::CowUtils;
-use derivative::Derivative;
-use rspack_error::{error, miette::IntoDiagnostic, Result};
+use derive_more::Debug;
+use rspack_error::{error, miette::IntoDiagnostic, Result, ToStringResultToRspackResultExt};
 use rspack_hook::define_hook;
 use rspack_paths::{AssertUtf8, Utf8Path, Utf8PathBuf};
 use rspack_regex::RspackRegex;
@@ -47,8 +47,7 @@ pub enum AfterResolveResult {
   Data(Box<AfterResolveData>),
 }
 
-#[derive(Derivative)]
-#[derivative(Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct AfterResolveData {
   pub compilation_id: CompilationId,
   pub resource: Utf8PathBuf,
@@ -72,12 +71,12 @@ pub struct AfterResolveData {
   // type_prefix: String,
   // category: String,
   // referenced_exports
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub resolve_dependencies: ResolveContextModuleDependencies,
 }
 
-define_hook!(ContextModuleFactoryBeforeResolve: AsyncSeriesWaterfall(data: BeforeResolveResult) -> BeforeResolveResult);
-define_hook!(ContextModuleFactoryAfterResolve: AsyncSeriesWaterfall(data: AfterResolveResult) -> AfterResolveResult);
+define_hook!(ContextModuleFactoryBeforeResolve: SeriesWaterfall(data: BeforeResolveResult) -> BeforeResolveResult);
+define_hook!(ContextModuleFactoryAfterResolve: SeriesWaterfall(data: AfterResolveResult) -> AfterResolveResult);
 
 #[derive(Debug, Default)]
 pub struct ContextModuleFactoryHooks {
@@ -85,18 +84,17 @@ pub struct ContextModuleFactoryHooks {
   pub after_resolve: ContextModuleFactoryAfterResolveHook,
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct ContextModuleFactory {
   loader_resolver_factory: Arc<ResolverFactory>,
   plugin_driver: SharedPluginDriver,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   resolve_dependencies: ResolveContextModuleDependencies,
 }
 
 #[async_trait::async_trait]
 impl ModuleFactory for ContextModuleFactory {
-  #[instrument(name = "context_module_factory:create", skip_all)]
+  #[instrument("context_module_factory:create", skip_all)]
   async fn create(&self, data: &mut ModuleFactoryCreateData) -> Result<ModuleFactoryResult> {
     match self.before_resolve(data).await? {
       BeforeResolveResult::Ignored => return Ok(ModuleFactoryResult::default()),
@@ -125,7 +123,10 @@ impl ContextModuleFactory {
       tracing::trace!("resolving context module path {}", options.resource);
 
       let resolver = &resolver_factory.get(ResolveOptionsWithDependencyType {
-        resolve_options: options.resolve_options.clone(),
+        resolve_options: options
+          .resolve_options
+          .clone()
+          .map(|r| Box::new(Arc::unwrap_or_clone(r))),
         resolve_to_context: false,
         dependency_category: options.context_options.category,
       });
@@ -237,9 +238,11 @@ impl ContextModuleFactory {
         for loader_request in loaders {
           let resolve_result = loader_resolver
             .resolve(data.context.as_ref(), loader_request)
-            .map_err(|err| {
-              let context = data.context.to_string();
-              error!("Failed to resolve loader: {loader_request} in {context} {err:?}")
+            .to_rspack_result_with_message(|e| {
+              format!(
+                "Failed to resolve loader: {loader_request} in {} {e}",
+                data.context
+              )
             })?;
           match resolve_result {
             ResolveResult::Resource(resource) => {
@@ -405,9 +408,8 @@ fn visit_dirs(
       if options.context_options.recursive {
         visit_dirs(ctx, &path, dependencies, options, resolve_options)?;
       }
-    } else if path.file_name().map_or(false, |name| name.starts_with('.')) {
+    } else if path.file_name().is_some_and(|name| name.starts_with('.')) {
       // ignore hidden files
-      continue;
     } else {
       if let Some(include) = include
         && !include.test(path_str)
@@ -462,6 +464,7 @@ fn visit_dirs(
           attributes: options.context_options.attributes.clone(),
           referenced_exports: options.context_options.referenced_exports.clone(),
           dependency_type: DependencyType::ContextElement(options.type_prefix),
+          factorize_info: Default::default(),
         });
       })
     }
@@ -520,7 +523,7 @@ fn alternative_requests(
     items.push(item.clone());
     for module in resolve_options.modules() {
       let dir = module.cow_replace('\\', "/");
-      if item.request.starts_with(&format!("./{}/", dir)) {
+      if item.request.starts_with(&format!("./{dir}/")) {
         items.push(AlternativeRequest::new(
           item.context.clone(),
           item.request[dir.len() + 3..].to_string(),

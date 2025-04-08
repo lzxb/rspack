@@ -2,7 +2,7 @@ use std::hash::Hash;
 
 use rspack_core::{
   get_entry_runtime, property_access,
-  rspack_sources::{ConcatSource, RawSource, SourceExt},
+  rspack_sources::{ConcatSource, RawStringSource, SourceExt},
   ApplyContext, ChunkUkey, Compilation, CompilationAdditionalChunkRuntimeRequirements,
   CompilationFinishModules, CompilationParams, CompilerCompilation, CompilerOptions, EntryData,
   LibraryExport, LibraryOptions, LibraryType, ModuleIdentifier, Plugin, PluginContext,
@@ -63,14 +63,14 @@ async fn compilation(
   compilation: &mut Compilation,
   _params: &mut CompilationParams,
 ) -> Result<()> {
-  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation);
+  let mut hooks = JsPlugin::get_compilation_hooks_mut(compilation.id());
   hooks.render_startup.tap(render_startup::new(self));
   hooks.chunk_hash.tap(js_chunk_hash::new(self));
   Ok(())
 }
 
 #[plugin_hook(JavascriptModulesRenderStartup for ExportPropertyLibraryPlugin)]
-fn render_startup(
+async fn render_startup(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
@@ -83,7 +83,7 @@ fn render_startup(
   if let Some(export) = options.export {
     let mut s = ConcatSource::default();
     s.add(render_source.source.clone());
-    s.add(RawSource::from(format!(
+    s.add(RawStringSource::from(format!(
       "__webpack_exports__ = __webpack_exports__{};",
       property_access(export, 0)
     )));
@@ -194,7 +194,7 @@ impl Plugin for ExportPropertyLibraryPlugin {
 }
 
 #[plugin_hook(CompilationAdditionalChunkRuntimeRequirements for ExportPropertyLibraryPlugin)]
-fn additional_chunk_runtime_requirements(
+async fn additional_chunk_runtime_requirements(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,

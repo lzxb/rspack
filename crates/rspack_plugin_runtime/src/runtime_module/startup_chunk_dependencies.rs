@@ -4,7 +4,7 @@ use itertools::Itertools;
 use rspack_collections::Identifier;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   ChunkUkey, Compilation, RuntimeGlobals, RuntimeModule,
 };
 
@@ -26,12 +26,20 @@ impl StartupChunkDependenciesRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
   }
 
-  fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+  fn template(&self) -> Vec<(String, String)> {
+    vec![(
+      self.id.to_string(),
+      include_str!("runtime/startup_chunk_dependencies.ejs").to_string(),
+    )]
+  }
+
+  async fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
     if let Some(chunk_ukey) = self.chunk {
       let chunk_ids = compilation
         .chunk_graph
@@ -44,7 +52,7 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
           compilation
             .chunk_by_ukey
             .expect_get(&chunk_ukey)
-            .expect_id()
+            .expect_id(&compilation.chunk_ids_artifact)
             .to_string()
         })
         .collect::<Vec<_>>();
@@ -78,18 +86,14 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
           .join("\n")
       };
 
-      Ok(
-        RawSource::from(format!(
-          r#"var next = {};
-        {} = function() {{
-          {}
-        }};"#,
-          RuntimeGlobals::STARTUP,
-          RuntimeGlobals::STARTUP,
-          body
-        ))
-        .boxed(),
-      )
+      let source = compilation.runtime_template.render(
+        &self.id,
+        Some(serde_json::json!({
+          "_body": body,
+        })),
+      )?;
+
+      Ok(RawStringSource::from(source).boxed())
     } else {
       unreachable!("should have chunk for StartupChunkDependenciesRuntimeModule")
     }

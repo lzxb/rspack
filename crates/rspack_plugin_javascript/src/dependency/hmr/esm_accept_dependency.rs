@@ -1,16 +1,20 @@
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
 use rspack_core::{
-  import_statement, runtime_condition_expression, AsDependency, Compilation, DependencyId,
-  DependencyRange, DependencyTemplate, RuntimeCondition, RuntimeSpec, TemplateContext,
+  import_statement, runtime_condition_expression, DependencyId, DependencyLocation,
+  DependencyRange, DependencyTemplate, RuntimeCondition, SharedSourceMap, TemplateContext,
   TemplateReplaceSource,
 };
 
 use crate::dependency::import_emitted_runtime;
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMAcceptDependency {
   range: DependencyRange,
   has_callback: bool,
   dependency_ids: Vec<DependencyId>,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
 }
 
 impl ESMAcceptDependency {
@@ -18,19 +22,22 @@ impl ESMAcceptDependency {
     range: DependencyRange,
     has_callback: bool,
     dependency_ids: Vec<DependencyId>,
+    source_map: Option<SharedSourceMap>,
   ) -> Self {
     Self {
       range,
       has_callback,
       dependency_ids,
+      source_map,
     }
   }
 
-  pub fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  pub fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMAcceptDependency {
   fn apply(
     &self,
@@ -117,18 +124,4 @@ impl DependencyTemplate for ESMAcceptDependency {
       );
     }
   }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    None
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
-  }
 }
-
-impl AsDependency for ESMAcceptDependency {}

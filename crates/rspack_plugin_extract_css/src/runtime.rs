@@ -4,7 +4,7 @@ use cow_utils::CowUtils;
 use rspack_collections::UkeySet;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{RawSource, SourceExt},
+  rspack_sources::{RawStringSource, SourceExt},
   ChunkUkey, Compilation, CrossOriginLoading, RuntimeGlobals, RuntimeModule, RuntimeModuleStage,
 };
 use rspack_error::Result;
@@ -56,6 +56,7 @@ impl CssLoadingRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for CssLoadingRuntimeModule {
   fn name(&self) -> rspack_collections::Identifier {
     "webpack/runtime/css loading".into()
@@ -65,7 +66,7 @@ impl RuntimeModule for CssLoadingRuntimeModule {
     RuntimeModuleStage::Attach
   }
 
-  fn generate(
+  async fn generate(
     &self,
     compilation: &rspack_core::Compilation,
   ) -> Result<rspack_core::rspack_sources::BoxSource> {
@@ -93,7 +94,7 @@ impl RuntimeModule for CssLoadingRuntimeModule {
     let with_hmr = runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_UPDATE_HANDLERS);
 
     if !with_hmr && !with_loading {
-      return Ok(RawSource::from("").boxed());
+      return Ok(RawStringSource::from_static("").boxed());
     }
 
     let mut attr = String::default();
@@ -153,7 +154,8 @@ impl RuntimeModule for CssLoadingRuntimeModule {
           "__INSTALLED_CHUNKS__",
           &format!(
             "{}: 0,\n",
-            serde_json::to_string(chunk.expect_id()).expect("json stringify failed")
+            serde_json::to_string(chunk.expect_id(&compilation.chunk_ids_artifact))
+              .expect("json stringify failed")
           ),
         );
 
@@ -171,7 +173,7 @@ impl RuntimeModule for CssLoadingRuntimeModule {
               .filter_map(|id| {
                 let chunk = compilation.chunk_by_ukey.expect_get(id);
 
-                chunk.id().map(|id| {
+                chunk.id(&compilation.chunk_ids_artifact).map(|id| {
                   format!(
                     "{}: 1,\n",
                     serde_json::to_string(id).expect("json stringify failed")
@@ -200,6 +202,6 @@ impl RuntimeModule for CssLoadingRuntimeModule {
       runtime.cow_replace("__WITH_HMT__", "// no hmr")
     };
 
-    Ok(Arc::new(RawSource::from(runtime.into_owned())))
+    Ok(Arc::new(RawStringSource::from(runtime.into_owned())))
   }
 }

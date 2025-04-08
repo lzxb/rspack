@@ -1,6 +1,8 @@
-use std::collections::HashSet;
-use std::hash::Hash;
-use std::{collections::HashMap, fmt::Debug, hash::BuildHasherDefault};
+use std::{
+  collections::{HashMap, HashSet},
+  fmt::Debug,
+  hash::{BuildHasherDefault, Hash},
+};
 
 use dashmap::{DashMap, DashSet};
 use indexmap::{IndexMap, IndexSet};
@@ -31,6 +33,7 @@ pub trait ItemUkey {
 }
 
 /// Ukey stands for Unique key
+#[rspack_cacheable::cacheable]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Ukey(u32);
 
@@ -151,8 +154,8 @@ where
   pub fn get_many_mut<const N: usize>(
     &mut self,
     ids: [&<Item as DatabaseItem>::ItemUkey; N],
-  ) -> Option<[&mut Item; N]> {
-    self.inner.get_many_mut(ids)
+  ) -> [Option<&mut Item>; N] {
+    self.inner.get_disjoint_mut(ids)
   }
 
   pub fn get(&self, id: &<Item as DatabaseItem>::ItemUkey) -> Option<&Item> {

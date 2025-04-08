@@ -1,4 +1,20 @@
-/** @type {import('../../dist').TStatsAPICaseConfig} */
+function deepReplace(obj) {
+	if (typeof obj === "object" && obj !== null) {
+		for (const key in obj) {
+			if (Object.prototype.hasOwnProperty.call(obj, key)) {
+				if (typeof obj[key] === "number" && key === "runtime") {
+					obj[key] = "xxx";
+				} else if (key === "hash") {
+					obj[key] = "xxxxxxxxxxxxxxxx";
+				} else if (typeof obj[key] === "object") {
+					deepReplace(obj[key]);
+				}
+			}
+		}
+	}
+}
+
+/** @type {import('@rspack/test-tools').TStatsAPICaseConfig} */
 module.exports = {
 	description: "should output the chunks",
 	options(context) {
@@ -8,15 +24,17 @@ module.exports = {
 		};
 	},
 	async check(stats) {
-		expect(
-			stats?.toJson({
-				chunks: true,
-				timings: false,
-				builtAt: false,
-				version: false,
-				modulesSpace: 3
-			}).chunks
-		).toMatchInlineSnapshot(`
+		const statsChunks = stats?.toJson({
+			chunks: true,
+			timings: false,
+			builtAt: false,
+			version: false,
+			modulesSpace: 3
+		}).chunks;
+
+		deepReplace(statsChunks);
+
+		expect(statsChunks).toMatchInlineSnapshot(`
 		Array [
 		  Object {
 		    auxiliaryFiles: Array [],
@@ -27,7 +45,7 @@ module.exports = {
 		      chunkB.js,
 		    ],
 		    filteredModules: undefined,
-		    hash: 74c3df550823af13,
+		    hash: xxxxxxxxxxxxxxxx,
 		    id: 250,
 		    idHints: Array [],
 		    initial: false,
@@ -48,23 +66,23 @@ module.exports = {
 		        failed: false,
 		        filteredReasons: undefined,
 		        id: 101,
-		        identifier: <ROOT>/tests/fixtures/b.js,
+		        identifier: <TEST_TOOLS_ROOT>/tests/fixtures/b.js,
 		        index: 1,
 		        index2: 1,
-		        issuer: <ROOT>/tests/fixtures/chunk-b.js,
+		        issuer: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		        issuerId: 725,
 		        issuerName: ./fixtures/chunk-b.js,
 		        issuerPath: Array [
 		          Object {
 		            id: 725,
-		            identifier: <ROOT>/tests/fixtures/chunk-b.js,
+		            identifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		            name: ./fixtures/chunk-b.js,
 		          },
 		        ],
 		        layer: undefined,
 		        moduleType: javascript/auto,
 		        name: ./fixtures/b.js,
-		        nameForCondition: <ROOT>/tests/fixtures/b.js,
+		        nameForCondition: <TEST_TOOLS_ROOT>/tests/fixtures/b.js,
 		        optimizationBailout: Array [
 		          Statement with side_effects in source code at ./fixtures/b.js<LINE_COL_RANGE>,
 		          ModuleConcatenation bailout: Module is not an ECMAScript module,
@@ -73,25 +91,31 @@ module.exports = {
 		        orphan: false,
 		        postOrderIndex: 1,
 		        preOrderIndex: 1,
-		        providedExports: Array [],
+		        providedExports: null,
 		        reasons: Array [
 		          Object {
+		            active: true,
+		            explanation: undefined,
+		            loc: undefined,
 		            moduleId: 101,
-		            moduleIdentifier: <ROOT>/tests/fixtures/b.js,
+		            moduleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/b.js,
 		            moduleName: ./fixtures/b.js,
 		            resolvedModule: ./fixtures/b.js,
 		            resolvedModuleId: 101,
-		            resolvedModuleIdentifier: <ROOT>/tests/fixtures/b.js,
+		            resolvedModuleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/b.js,
 		            type: cjs self exports reference,
 		            userRequest: self,
 		          },
 		          Object {
+		            active: true,
+		            explanation: undefined,
+		            loc: undefined,
 		            moduleId: 725,
-		            moduleIdentifier: <ROOT>/tests/fixtures/chunk-b.js,
+		            moduleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		            moduleName: ./fixtures/chunk-b.js,
 		            resolvedModule: ./fixtures/chunk-b.js,
 		            resolvedModuleId: 725,
-		            resolvedModuleIdentifier: <ROOT>/tests/fixtures/chunk-b.js,
+		            resolvedModuleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		            type: import(),
 		            userRequest: ./b,
 		          },
@@ -111,9 +135,9 @@ module.exports = {
 		    origins: Array [
 		      Object {
 		        loc: 2:9-55,
-		        module: <ROOT>/tests/fixtures/chunk-b.js,
+		        module: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		        moduleId: 725,
-		        moduleIdentifier: <ROOT>/tests/fixtures/chunk-b.js,
+		        moduleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		        moduleName: ./fixtures/chunk-b.js,
 		        request: ./b,
 		      },
@@ -144,7 +168,7 @@ module.exports = {
 		      main.js,
 		    ],
 		    filteredModules: undefined,
-		    hash: 6c90447074d09a02,
+		    hash: xxxxxxxxxxxxxxxx,
 		    id: 909,
 		    idHints: Array [],
 		    initial: true,
@@ -165,7 +189,7 @@ module.exports = {
 		        failed: false,
 		        filteredReasons: undefined,
 		        id: 725,
-		        identifier: <ROOT>/tests/fixtures/chunk-b.js,
+		        identifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		        index: 0,
 		        index2: 0,
 		        issuer: undefined,
@@ -175,7 +199,7 @@ module.exports = {
 		        layer: undefined,
 		        moduleType: javascript/auto,
 		        name: ./fixtures/chunk-b.js,
-		        nameForCondition: <ROOT>/tests/fixtures/chunk-b.js,
+		        nameForCondition: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		        optimizationBailout: Array [
 		          Statement with side_effects in source code at ./fixtures/chunk-b.js<LINE_COL_RANGE>,
 		          ModuleConcatenation bailout: Module is not an ECMAScript module,
@@ -184,21 +208,27 @@ module.exports = {
 		        orphan: false,
 		        postOrderIndex: 0,
 		        preOrderIndex: 0,
-		        providedExports: Array [],
+		        providedExports: null,
 		        reasons: Array [
 		          Object {
+		            active: true,
+		            explanation: undefined,
+		            loc: undefined,
 		            moduleId: null,
 		            resolvedModuleId: null,
 		            type: entry,
 		            userRequest: ./fixtures/chunk-b,
 		          },
 		          Object {
+		            active: true,
+		            explanation: undefined,
+		            loc: undefined,
 		            moduleId: 725,
-		            moduleIdentifier: <ROOT>/tests/fixtures/chunk-b.js,
+		            moduleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		            moduleName: ./fixtures/chunk-b.js,
 		            resolvedModule: ./fixtures/chunk-b.js,
 		            resolvedModuleId: 725,
-		            resolvedModuleIdentifier: <ROOT>/tests/fixtures/chunk-b.js,
+		            resolvedModuleIdentifier: <TEST_TOOLS_ROOT>/tests/fixtures/chunk-b.js,
 		            type: cjs self exports reference,
 		            userRequest: self,
 		          },
@@ -235,7 +265,7 @@ module.exports = {
 		    size: 85,
 		    sizes: Object {
 		      javascript: 85,
-		      runtime: 9129,
+		      runtime: xxx,
 		    },
 		    type: chunk,
 		  },

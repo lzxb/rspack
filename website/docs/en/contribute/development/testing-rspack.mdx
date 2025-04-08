@@ -5,7 +5,7 @@ Rspack's test cases include the following:
 - Rspack core test cases are stored in the `packages/rspack-test-tools/tests` folder and will run the test cases by simulating the build process. In general, test cases should be added in this folder.
 - Test cases for other Rspack packages are stored in the `packages/{name}/tests` folder and should only be added or modified when modifying that package.
 
-## Running Tests
+## Running tests
 
 You can run these test cases in the following ways:
 
@@ -16,7 +16,7 @@ You can run these test cases in the following ways:
 - To filter specific test cases, run `npm run test -- -t path-of-spec` from the `packages/rspack-test-tools` directory.
   - Like `npm run test -- -t config/asset` to only run test cases from the `packages/rspack-test-tools/configCases/asset` folder (config will be automatically mapped to configCases, and other folders will work in a similar way).
 
-## Directory Structure
+## Directory structure
 
 The structure of the `packages/rspack-test-tools/tests` folder is as follows:
 
@@ -33,13 +33,13 @@ The structure of the `packages/rspack-test-tools/tests` folder is as follows:
 
 The `{Name}.test.js` is the entry file for tests, which will walk the `{name}Cases` folder and run cases in it. Therefore, when you need to add or modify test cases, add them to the relevant `{name}Cases` folder based on the type of testing.
 
-## Test Types
+## Test types
 
 The existing test types are:
 
 - [Normal](#normal): Used to test core build processes without configuration changes. This type is used when testing does not require adding `rspack.config.js`.
 - [Config](#config): Used to test build configuration options. If your test needs specific configuration added through `rspack.config.js` to run and does not fit other scenarios, use this test type.
-- [Hot](#hot): Used to test whether Hot Module Replacement (HMR) runs correctly. This type includes HotNode with a fixed `target=async-node`, HotWeb with a fixed `target=web`, and HotWorker with a fixed `target=webworker`.
+- [Hot](#hot): Used to test whether HMR runs correctly. This type includes HotNode with a fixed `target=async-node`, HotWeb with a fixed `target=web`, and HotWorker with a fixed `target=webworker`.
 - [HotSnapshot](#hotsnapshot): Used to test whether HMR can generate correct intermediate artifacts. This test type shares test cases with the Hot type and generates snapshots for incremental artifacts for each HMR.
 - [Watch](#watch): Used to test incremental compilation after modifying files in Watch mode.
 - [StatsOutput](#statsoutput): Used to test the console output log after the build ends.
@@ -79,7 +79,7 @@ The writing of the case is the same as a regular rspack project, but it does not
 
 This test case is similar to a regular rspack project. You can specify the build configuration by adding a `rspack.config.js` and control various behaviors during testing by adding a `test.config.js`. The structure of the `test.config.js` file is as follows:
 
-```typescript {16-20} title="test.config.js"
+```ts {16-20} title="test.config.js"
 type TConfigCaseConfig = {
   noTest?: boolean; // Do not run the test output and end the test
   beforeExecute?: () => void; // Callback before running the output
@@ -254,7 +254,7 @@ This test case is similar to a typical rspack project and can specify build conf
 
 This test case is similar to a typical rspack project, but it will add a `test.config.js` file in the case directory and specify a `validate()` method to check the hash information in the `stats` object after the build is complete:
 
-```javascript {5-8} title="test.config.js"
+```js {5-8} title="test.config.js"
 type THashCaseConfig = {
   validate?: (stats: TCompilerStats<T>) => void,
 };
@@ -276,7 +276,7 @@ module.exports = {
 
 This test uses `rspack-test-tools/tests/fixtures` as the source code for the build, so the test case is written as a single file. Its structure is as follows:
 
-```javascript {9-12} title="{case.js}"
+```js {9-12} title="{case.js}"
 interface TCompilerCaseConfig {
   description: string; // Description of the test case
   options?: (context: ITestContext) => TCompilerOptions<T>; // Test case build configuration
@@ -308,7 +308,7 @@ This test does not execute real builds; it only generates build configurations a
 
 This test uses `rspack-test-tools/tests/fixtures` as the source code for the build, so the test case is written as a single file. Its structure is as follows:
 
-```javascript {8-11} title="{case}.js"
+```js {8-11} title="{case}.js"
 interface TDefaultsCaseConfig {
   description: string; // Description of the test case
   cwd?: string; // process.cwd for generating the build configuration of the test case, default is the `rspack-test-tools` directory
@@ -338,7 +338,7 @@ The details for the Error test are as follows:
 
 This test uses `rspack-test-tools/tests/fixtures` as the source code for the build, so the test case is written as a single file. Its structure is as follows:
 
-```javascript {8-11} title="{case}.js"
+```js {8-11} title="{case}.js"
 interface TErrorCaseConfig {
   description: string; // Description of the test case
   options?: (
@@ -368,7 +368,7 @@ This test records the input and output of the hook and stores it in the snapshot
 
 This test uses `rspack-test-tools/tests/fixtures` as the source code for the build, so the test case is written as a single file. Its structure is as follows:
 
-```javascript {8-11} title="{case}/test.js"
+```js {8-11} title="{case}/test.js"
 interface THookCaseConfig {
   description: string; // Description of the test case
   options?: (

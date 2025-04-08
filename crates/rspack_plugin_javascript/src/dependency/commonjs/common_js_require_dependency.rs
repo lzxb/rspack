@@ -1,9 +1,11 @@
-use rspack_core::{module_id, Compilation, DependencyRange, RuntimeSpec};
-use rspack_core::{AsContextDependency, Dependency, DependencyCategory};
-use rspack_core::{DependencyId, DependencyTemplate};
-use rspack_core::{DependencyType, ModuleDependency};
-use rspack_core::{TemplateContext, TemplateReplaceSource};
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
+use rspack_core::{
+  module_id, AsContextDependency, Dependency, DependencyCategory, DependencyId, DependencyLocation,
+  DependencyRange, DependencyTemplate, DependencyType, FactorizeInfo, ModuleDependency,
+  SharedSourceMap, TemplateContext, TemplateReplaceSource,
+};
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct CommonJsRequireDependency {
   id: DependencyId,
@@ -11,6 +13,9 @@ pub struct CommonJsRequireDependency {
   optional: bool,
   range: DependencyRange,
   range_expr: Option<DependencyRange>,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
+  factorize_info: FactorizeInfo,
 }
 
 impl CommonJsRequireDependency {
@@ -19,6 +24,7 @@ impl CommonJsRequireDependency {
     range: DependencyRange,
     range_expr: Option<DependencyRange>,
     optional: bool,
+    source_map: Option<SharedSourceMap>,
   ) -> Self {
     Self {
       id: DependencyId::new(),
@@ -26,17 +32,20 @@ impl CommonJsRequireDependency {
       optional,
       range,
       range_expr,
+      source_map,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for CommonJsRequireDependency {
   fn id(&self) -> &DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn category(&self) -> &DependencyCategory {
@@ -56,6 +65,7 @@ impl Dependency for CommonJsRequireDependency {
   }
 }
 
+#[cacheable_dyn]
 impl ModuleDependency for CommonJsRequireDependency {
   fn request(&self) -> &str {
     &self.request
@@ -72,8 +82,17 @@ impl ModuleDependency for CommonJsRequireDependency {
   fn set_request(&mut self, request: String) {
     self.request = request;
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for CommonJsRequireDependency {
   fn apply(
     &self,
@@ -92,18 +111,6 @@ impl DependencyTemplate for CommonJsRequireDependency {
       .as_str(),
       None,
     );
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

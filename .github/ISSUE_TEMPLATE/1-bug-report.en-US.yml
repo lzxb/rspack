@@ -1,7 +1,8 @@
 name: "🐞 Bug Report"
 description: Report a bug to Rspack
 title: "[Bug]: "
-labels: ["bug", "pending triage"]
+type: Bug
+labels: ["pending triage"]
 body:
   - type: markdown
     attributes:

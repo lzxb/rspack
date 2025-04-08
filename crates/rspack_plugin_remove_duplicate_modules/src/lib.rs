@@ -21,7 +21,7 @@ impl std::default::Default for RemoveDuplicateModulesPlugin {
 }
 
 #[plugin_hook(CompilationOptimizeChunks for RemoveDuplicateModulesPlugin)]
-fn optimize_chunks(&self, compilation: &mut Compilation) -> Result<Option<bool>> {
+async fn optimize_chunks(&self, compilation: &mut Compilation) -> Result<Option<bool>> {
   let module_graph = compilation.get_module_graph();
   let chunk_graph = &compilation.chunk_graph;
 
@@ -54,10 +54,12 @@ fn optimize_chunks(&self, compilation: &mut Compilation) -> Result<Option<bool>>
     compilation.chunk_graph.add_chunk(new_chunk_ukey);
 
     for chunk_ukey in &chunks {
-      let [new_chunk, origin] = compilation
+      let [Some(new_chunk), Some(origin)] = compilation
         .chunk_by_ukey
         .get_many_mut([&new_chunk_ukey, chunk_ukey])
-        .expect("should have both chunks");
+      else {
+        panic!("should have both chunks")
+      };
       origin.split(new_chunk, &mut compilation.chunk_group_by_ukey);
       if let Some(mutations) = compilation.incremental.mutations_write() {
         mutations.add(Mutation::ChunkSplit {

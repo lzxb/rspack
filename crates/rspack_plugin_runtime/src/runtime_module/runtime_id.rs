@@ -2,7 +2,7 @@ use itertools::Itertools;
 use rspack_collections::Identifier;
 use rspack_core::{
   impl_runtime_module,
-  rspack_sources::{BoxSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, RawStringSource, SourceExt},
   ChunkUkey, Compilation, RuntimeGlobals, RuntimeModule,
 };
 
@@ -19,6 +19,7 @@ impl Default for RuntimeIdRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for RuntimeIdRuntimeModule {
   fn attach(&mut self, chunk: ChunkUkey) {
     self.chunk = Some(chunk);
@@ -28,7 +29,7 @@ impl RuntimeModule for RuntimeIdRuntimeModule {
     self.id
   }
 
-  fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+  async fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
     if let Some(chunk_ukey) = self.chunk {
       let chunk = compilation.chunk_by_ukey.expect_get(&chunk_ukey);
 
@@ -48,7 +49,7 @@ impl RuntimeModule for RuntimeIdRuntimeModule {
       );
 
       Ok(
-        RawSource::from(format!(
+        RawStringSource::from(format!(
           "{} = {};",
           RuntimeGlobals::RUNTIME_ID,
           serde_json::to_string(&id).expect("Invalid json string")

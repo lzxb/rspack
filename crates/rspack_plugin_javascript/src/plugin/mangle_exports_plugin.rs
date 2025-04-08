@@ -42,7 +42,7 @@ impl MangleExportsPlugin {
 }
 
 #[plugin_hook(CompilationOptimizeCodeGeneration for MangleExportsPlugin)]
-fn optimize_code_generation(&self, compilation: &mut Compilation) -> Result<()> {
+async fn optimize_code_generation(&self, compilation: &mut Compilation) -> Result<()> {
   // TODO: should bailout if compilation.moduleMemCache is enable, https://github.com/webpack/webpack/blob/1f99ad6367f2b8a6ef17cce0e058f7a67fb7db18/lib/optimize/MangleExportsPlugin.js#L160-L164
   // We don't do that cause we don't have this option
   let mut mg = compilation.get_module_graph_mut();
@@ -54,11 +54,10 @@ fn optimize_code_generation(&self, compilation: &mut Compilation) -> Result<()> 
     ) else {
       continue;
     };
-    let is_namespace = module
-      .build_meta()
-      .as_ref()
-      .map(|meta| matches!(meta.exports_type, BuildMetaExportsType::Namespace))
-      .unwrap_or_default();
+    let is_namespace = matches!(
+      module.build_meta().exports_type,
+      BuildMetaExportsType::Namespace
+    );
     let exports_info = mgm.exports;
     mangle_exports_info(&mut mg, self.deterministic, exports_info, is_namespace);
   }

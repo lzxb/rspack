@@ -1,12 +1,10 @@
-use derivative::Derivative;
+use derive_more::Debug;
 use rspack_core::Filename;
 
-use super::cache_group_test::CacheGroupTest;
-use super::chunk_name::ChunkNameGetter;
+use super::{cache_group_test::CacheGroupTest, chunk_name::ChunkNameGetter};
 use crate::common::{ChunkFilter, ModuleLayerFilter, ModuleTypeFilter, SplitChunkSizes};
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct CacheGroup {
   /// For `splitChunks.cacheGroups` config
   /// ```js
@@ -19,19 +17,20 @@ pub struct CacheGroup {
   /// ```
   /// `hello` is the `key` here
   pub key: String,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub chunk_filter: ChunkFilter,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub test: CacheGroupTest,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub r#type: ModuleTypeFilter,
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub layer: ModuleLayerFilter,
   /// `name` is used to create chunk
-  #[derivative(Debug = "ignore")]
+  #[debug(skip)]
   pub name: ChunkNameGetter,
   pub priority: f64,
   pub min_size: SplitChunkSizes,
+  pub min_size_reduction: SplitChunkSizes,
   pub reuse_existing_chunk: bool,
   /// number of referenced chunks
   pub min_chunks: u32,

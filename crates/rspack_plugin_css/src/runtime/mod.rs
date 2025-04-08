@@ -4,7 +4,7 @@ use cow_utils::CowUtils;
 use rspack_collections::Identifier;
 use rspack_core::{
   basic_function, compile_boolean_matcher, impl_runtime_module,
-  rspack_sources::{BoxSource, ConcatSource, RawSource, SourceExt},
+  rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt},
   BooleanMatcher, ChunkUkey, Compilation, CrossOriginLoading, RuntimeGlobals, RuntimeModule,
   RuntimeModuleStage,
 };
@@ -24,12 +24,13 @@ impl Default for CssLoadingRuntimeModule {
   }
 }
 
+#[async_trait::async_trait]
 impl RuntimeModule for CssLoadingRuntimeModule {
   fn name(&self) -> Identifier {
     self.id
   }
 
-  fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
+  async fn generate(&self, compilation: &Compilation) -> rspack_error::Result<BoxSource> {
     if let Some(chunk_ukey) = self.chunk {
       let chunk = compilation.chunk_by_ukey.expect_get(&chunk_ukey);
       let runtime_requirements = get_chunk_runtime_requirements(compilation, &chunk_ukey);
@@ -54,15 +55,15 @@ impl RuntimeModule for CssLoadingRuntimeModule {
         let id = compilation
           .chunk_by_ukey
           .expect_get(chunk_ukey)
-          .expect_id()
-          .to_string();
+          .expect_id(&compilation.chunk_ids_artifact)
+          .clone();
         if chunk_has_css(chunk_ukey, compilation) {
           initial_chunk_ids.insert(id);
         }
       }
 
       if !with_hmr && !with_loading {
-        return Ok(RawSource::from("").boxed());
+        return Ok(RawStringSource::from_static("").boxed());
       }
 
       let mut source = ConcatSource::default();
@@ -72,7 +73,7 @@ impl RuntimeModule for CssLoadingRuntimeModule {
 
       // One entry initial chunk maybe is other entry dynamic chunk, so here
       // only render chunk without css. See packages/rspack/tests/runtimeCases/runtime/split-css-chunk test.
-      source.add(RawSource::from(format!(
+      source.add(RawStringSource::from(format!(
         "var installedChunks = {};\n",
         &stringify_chunks(&initial_chunk_ids, 0)
       )));
@@ -143,7 +144,7 @@ installedChunks[chunkId] = 0;
         Cow::Borrowed("// no initial css")
       };
 
-      source.add(RawSource::from(
+      source.add(RawStringSource::from(
         include_str!("./css_loading.js")
           .cow_replace(
             "__CROSS_ORIGIN_LOADING_PLACEHOLDER__",
@@ -162,7 +163,7 @@ installedChunks[chunkId] = 0;
           &compilation.options.output.global_object,
           &compilation.options.output.chunk_loading_global
         );
-        source.add(RawSource::from(
+        source.add(RawStringSource::from(
           include_str!("./css_loading_with_loading.js")
             .cow_replace("$CHUNK_LOADING_GLOBAL_EXPR$", &chunk_loading_global_expr)
             .cow_replace("CSS_MATCHER", &has_css_matcher.render("chunkId"))
@@ -179,7 +180,9 @@ installedChunks[chunkId] = 0;
       }
 
       if with_hmr {
-        source.add(RawSource::from(include_str!("./css_loading_with_hmr.js")));
+        source.add(RawStringSource::from_static(include_str!(
+          "./css_loading_with_hmr.js"
+        )));
       }
 
       Ok(source.boxed())

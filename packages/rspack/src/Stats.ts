@@ -23,12 +23,12 @@ export type {
 
 export class Stats {
 	#inner: binding.JsStats;
-	compilation: Compilation;
+	#compilation: Compilation;
 	#innerMap: WeakMap<Compilation, binding.JsStats>;
 
 	constructor(compilation: Compilation) {
 		this.#inner = compilation.__internal_getInner().getStats();
-		this.compilation = compilation;
+		this.#compilation = compilation;
 		this.#innerMap = new WeakMap([[this.compilation, this.#inner]]);
 	}
 
@@ -40,6 +40,15 @@ export class Stats {
 		const inner = compilation.__internal_getInner().getStats();
 		this.#innerMap.set(compilation, inner);
 		return inner;
+	}
+
+	get compilation() {
+		if (this.#compilation.__internal__shutdown) {
+			throw new Error(
+				"Unable to access `Stats` after the compiler was shutdown"
+			);
+		}
+		return this.#compilation;
 	}
 
 	get hash() {
@@ -97,8 +106,7 @@ export class Stats {
 			});
 		} catch (e) {
 			console.warn(
-				"Failed to get stats. " +
-					"Are you trying to access the stats from the previous compilation?"
+				`Failed to get stats due to error: ${(e as Error)?.message}, are you trying to access the stats from the previous compilation?`
 			);
 		}
 		return stats as StatsCompilation;
@@ -140,8 +148,7 @@ export class Stats {
 			});
 		} catch (e) {
 			console.warn(
-				"Failed to get stats. " +
-					"Are you trying to access the stats from the previous compilation?"
+				`Failed to get stats due to error: ${(e as Error)?.message}, are you trying to access the stats from the previous compilation?`
 			);
 		}
 

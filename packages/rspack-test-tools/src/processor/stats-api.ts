@@ -15,6 +15,7 @@ export interface IStatsAPIProcessorOptions<T extends ECompilerType> {
 	options?: (context: ITestContext) => TCompilerOptions<T>;
 	name: string;
 	compilerType: T;
+	snapshotName?: string;
 	compiler?: (context: ITestContext, compiler: TCompiler<T>) => Promise<void>;
 	build?: (context: ITestContext, compiler: TCompiler<T>) => Promise<void>;
 	check?: (stats: TCompilerStats<T>, compiler: TCompiler<T>) => Promise<void>;
@@ -57,7 +58,7 @@ export class StatsAPIProcessor<
 
 	async check(env: ITestEnv, context: ITestContext) {
 		const compiler = this.getCompiler(context);
-		const stats = compiler.getStats();
+		const stats = compiler.getStats() as TCompilerStats<T>;
 		env.expect(typeof stats).toBe("object");
 		await this._statsAPIOptions.check?.(stats!, compiler.getCompiler()!);
 	}

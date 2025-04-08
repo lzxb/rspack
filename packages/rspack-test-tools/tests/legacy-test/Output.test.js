@@ -1,6 +1,6 @@
 const path = require("path");
 const fs = require("fs");
-const rspack = require("@rspack/core");
+const { rspack } = require("@rspack/core");
 
 describe("Output", () => {
 	function compile(entry, options, callback) {
@@ -52,7 +52,10 @@ describe("Output", () => {
 	});
 
 	it("should be cleared the build directory", done => {
-		const outputDist = path.resolve(__dirname, "../js/legacy-test/output-clear-build-directory");
+		const outputDist = path.resolve(
+			__dirname,
+			"../js/legacy-test/output-clear-build-directory"
+		);
 		compile(
 			"./a",
 			{

@@ -3,8 +3,7 @@ mod impl_plugin_for_css_plugin;
 use std::cmp::{self, Reverse};
 
 use rspack_collections::{DatabaseItem, IdentifierSet};
-use rspack_core::{Chunk, Compilation, Module};
-use rspack_core::{ChunkUkey, ModuleIdentifier};
+use rspack_core::{Chunk, ChunkUkey, Compilation, Module, ModuleIdentifier};
 use rspack_hook::plugin;
 
 #[plugin]
@@ -180,9 +179,9 @@ impl CssPlugin {
       // Remove the selected module from all lists
       for SortedModules { set, list } in &mut modules_by_chunk_group {
         let last_module = list.last();
-        if last_module.map_or(false, |last_module| {
-          last_module.identifier() == selected_module.identifier()
-        }) {
+        if last_module
+          .is_some_and(|last_module| last_module.identifier() == selected_module.identifier())
+        {
           list.pop();
           set.remove(&selected_module.identifier());
         } else if has_failed.is_some() && set.contains(&selected_module.identifier()) {

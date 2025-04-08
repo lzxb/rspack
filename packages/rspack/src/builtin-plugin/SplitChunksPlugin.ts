@@ -2,16 +2,19 @@ import assert from "node:assert";
 import {
 	type BuiltinPlugin,
 	BuiltinPluginName,
+	type JsCacheGroupTestCtx,
 	type JsChunk,
-	type JsModule,
 	type RawCacheGroupOptions,
 	type RawSplitChunksOptions
 } from "@rspack/binding";
 
 import { Chunk } from "../Chunk";
 import type { Compiler } from "../Compiler";
-import { Module } from "../Module";
-import type { OptimizationSplitChunksOptions } from "../config";
+import type { Module } from "../Module";
+import type {
+	OptimizationSplitChunksCacheGroup,
+	OptimizationSplitChunksOptions
+} from "../config";
 import { JsSplitChunkSizes } from "../util/SplitChunkSize";
 import { RspackBuiltinPlugin, createBuiltinPlugin } from "./base";
 
@@ -40,7 +43,7 @@ function toRawSplitChunksOptions(
 
 	function getName(name: any) {
 		interface Context {
-			module: JsModule;
+			module: Module;
 			chunks: JsChunk[];
 			cacheGroupKey: string;
 		}
@@ -50,29 +53,21 @@ function toRawSplitChunksOptions(
 				if (typeof ctx.module === "undefined") {
 					return name(undefined);
 				}
-				return name(
-					Module.__from_binding(ctx.module, compiler._lastCompilation),
-					getChunks(ctx.chunks),
-					ctx.cacheGroupKey
-				);
+				return name(ctx.module, getChunks(ctx.chunks), ctx.cacheGroupKey);
 			};
 		}
 		return name;
 	}
 
-	function getTest(test: any) {
-		interface Context {
-			module: JsModule;
-		}
-
+	function getTest(test: OptimizationSplitChunksCacheGroup["test"]) {
 		if (typeof test === "function") {
-			return (ctx: Context) => {
-				if (typeof ctx.module === "undefined") {
-					return test(undefined);
-				}
-				return test(
-					Module.__from_binding(ctx.module, compiler._lastCompilation)
-				);
+			return (ctx: JsCacheGroupTestCtx) => {
+				// chunk graph and module graph should all exist in the optimizeChunks stage
+				const info = {
+					moduleGraph: compiler._lastCompilation!.moduleGraph,
+					chunkGraph: compiler._lastCompilation!.chunkGraph
+				};
+				return test(ctx.module, info);
 			};
 		}
 		return test;
@@ -80,13 +75,7 @@ function toRawSplitChunksOptions(
 
 	function getChunks(chunks: any) {
 		if (typeof chunks === "function") {
-			return (chunk: JsChunk) =>
-				chunks(
-					Chunk.__from_binding(
-						chunk,
-						compiler._lastCompilation!.__internal_getInner()
-					)
-				);
+			return (chunk: JsChunk) => chunks(Chunk.__from_binding(chunk));
 		}
 		return chunks;
 	}
@@ -98,6 +87,7 @@ function toRawSplitChunksOptions(
 		cacheGroups = {},
 		fallbackCacheGroup,
 		minSize,
+		minSizeReduction,
 		maxSize,
 		maxAsyncSize,
 		maxInitialSize,
@@ -118,6 +108,7 @@ function toRawSplitChunksOptions(
 					name,
 					chunks,
 					minSize,
+					minSizeReduction,
 					maxSize,
 					maxAsyncSize,
 					maxInitialSize,
@@ -129,6 +120,7 @@ function toRawSplitChunksOptions(
 					name: getName(name),
 					chunks: getChunks(chunks),
 					minSize: JsSplitChunkSizes.__to_binding(minSize),
+					minSizeReduction: JsSplitChunkSizes.__to_binding(minSizeReduction),
 					maxSize: JsSplitChunkSizes.__to_binding(maxSize),
 					maxAsyncSize: JsSplitChunkSizes.__to_binding(maxAsyncSize),
 					maxInitialSize: JsSplitChunkSizes.__to_binding(maxInitialSize),
@@ -141,6 +133,7 @@ function toRawSplitChunksOptions(
 			...fallbackCacheGroup
 		},
 		minSize: JsSplitChunkSizes.__to_binding(minSize),
+		minSizeReduction: JsSplitChunkSizes.__to_binding(minSizeReduction),
 		maxSize: JsSplitChunkSizes.__to_binding(maxSize),
 		maxAsyncSize: JsSplitChunkSizes.__to_binding(maxAsyncSize),
 		maxInitialSize: JsSplitChunkSizes.__to_binding(maxInitialSize),

@@ -5,17 +5,17 @@ sidebar: false
 
 import { PackageManagerTabs } from '@theme';
 
+_January 09, 2024_
+
 # Announcing Rspack 0.5
 
-> January 09, 2024
-
-## Major Feature Updates
+## Major feature updates
 
 ### Module Federation added to Rspack
 
 Checkout [this blog](/blog/module-federation-added-to-rspack) for more details.
 
-## Breaking Changes
+## Breaking changes
 
 ### optimization.chunkIds is deterministic in production mode by default
 
@@ -37,8 +37,8 @@ In order to achieve old behavior, please remove `rule.type` or change it to `"ja
 
 To transform a `.jsx` file:
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   module: {
     rules: [
       {
@@ -61,8 +61,8 @@ module.exports = {
 
 To transform a `.tsx` file:
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   module: {
     rules: [
       {
@@ -85,8 +85,8 @@ module.exports = {
 
 To transform a `.ts` file:
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   module: {
     rules: [
       {
@@ -110,8 +110,8 @@ module.exports = {
 
 Rspack aligns [target](/config/target) with webpack. Instead of transforming arbitrary user code, Rspack now lets loaders control the transformation of user land code. To transform user land code to which your target environment(s) needed, add `env` to `builtin:swc-loader`:
 
-```diff
-module.exports = {
+```diff title="rspack.config.mjs"
+export default {
   module: {
     rules: [
       {
@@ -140,8 +140,8 @@ module.exports = {
 
 In order to get the same behavior, change `resolve.extensions` to this:
 
-```js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   resolve: {
     extensions: ['...', '.tsx', '.ts', '.jsx'], // "..." means to extend from the default extensions
   },
@@ -186,7 +186,7 @@ When `experiments.rspackFuture.disableApplyEntryLazily` is `false`, `options.ent
 
 This configuration has no effect on users developing applications in Rspack most of the time, but should be noted by developers of Rspack plugins or higher-level frameworks.
 
-## Migration Guide
+## Migration guide
 
 v0.5.0 removed lots of deprecated features, except that, v0.5.0 introduced four breaking changes, and you only need to notice two of them if you are developing applications using Rspack. So v0.5.0 is easy to migrate if you already migrate to v0.4+ with no deprecate warnings, if you haven't, checkout the [v0.4.0 migration guide](https://www.rspack.dev/blog/announcing-0.4#migration-guide).
 
@@ -245,7 +245,7 @@ If you are using `@rspack/cli`, or rsbuild, or other higher-level framework of R
 Before prepending an extra entry in Rspack is prepending it to `compiler.options.entry`, but now you need to apply `EntryPlugin` by yourself.
 
 ```diff
-const rspack = require('@rspack/core');
+const { rspack } = require('@rspack/core');
 const compiler = rspack(options);
 
 function prependEntry(compiler, additionalEntry) {

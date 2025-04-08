@@ -13,29 +13,29 @@ import PropertyType from '@components/PropertyType';
 
 The `entry` configuration is used to set the entry module for Rspack builds.
 
-## Single Entry
+## Single entry
 
 If you are building a single page application or a library, you will usually only need to set up a single entry point.
 
 To set up a single entry, simply pass the path to the entry module as a string to the `entry` configuration.
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: './src/index.js',
 };
 ```
 
 The above writing method will automatically set the name of the entry module to `main`, which is equivalent to the following writing method:
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     main: './src/index.js',
   },
 };
 ```
 
-### Path Type
+### Path type
 
 The path of the entry module can be a relative path or an absolute path.
 
@@ -43,22 +43,22 @@ If `entry` is set as a relative path, Rspack will use the value set by [context 
 
 You can also use the [path module](https://nodejs.org/api/path.html) in Node.js to generate an absolute path and pass it to the `entry` configuration:
 
-```ts title="rspack.config.js"
-const path = require('path');
+```js title="rspack.config.mjs"
+import path from 'node:path';
 
-module.exports = {
+export default {
   entry: path.join(__dirname, './src/index.js'),
 };
 ```
 
-### Entry Array
+### Entry array
 
 When setting the value of an entry, in addition to setting it to `string`, you can also pass in a `string[]`, meaning that the entry contains multiple entry modules.
 
 For example, the following example will build `pre.js` and `post.js` into the output of `page`.
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     page: ['./src/pre.js', './src/post.js'],
   },
@@ -67,14 +67,14 @@ module.exports = {
 
 Multiple modules will be executed sequentially according to the order defined by the array, so the code in `pre.js` will be executed before the code in `post.js`.
 
-## Multiple Entries
+## Multiple entries
 
 If you need to build multiple entries at once, you should set `entry` to an object, and each key of the object corresponds to an entry name.
 
 For example, the following example will build `page1` and `page2` as two entries:
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     page1: './src/page1/index.js',
     page2: './src/page2/index.js',
@@ -82,7 +82,7 @@ module.exports = {
 };
 ```
 
-### Entry Description Object
+### Entry description object
 
 When you set `entry` to an object, you can set the value of the entry to a description object. A description object can contain the following properties:
 
@@ -95,8 +95,8 @@ When you set `entry` to an object, you can set the value of the entry to a descr
 
 The path or paths to the entry modules.
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     foo: {
       import: './src/foo.js',
@@ -107,8 +107,8 @@ module.exports = {
 
 Multiple paths can be set in the `import` property:
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     foo: {
       import: ['./src/foo.js', './src/bar.js'],
@@ -128,8 +128,8 @@ The name of the runtime chunk. When `runtime` is set, a new runtime chunk will b
 
 The `runtime` property is used to set the name of the runtime chunk, for example to set the name of the `main` entry chunk to `'foo'`:
 
-```ts title="rspack.config.js"
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     main: {
       import: './src/index.js',
@@ -228,8 +228,8 @@ Specifies the layer in which modules of this entrypoint are placed. Make the cor
 This configuration will only take effect when [experiments.layers](/config/experiments#experimentslayers) is `true`.
 :::
 
-```js title=rspack.config.js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry: {
     index: {
       import: './src/index.js',
@@ -248,8 +248,8 @@ If a function is passed then it will be invoked on every [make](/api/plugin-api/
 
 > Note that the `make` event triggers when webpack starts and for every invalidation when [watching for file changes](/config/watch).
 
-```js title=rspack.config.js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   //...
   entry: () => './demo',
 };
@@ -257,8 +257,8 @@ module.exports = {
 
 Or:
 
-```js title=rspack.config.js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   //...
   entry: () => new Promise(resolve => resolve(['./demo', './demo2'])),
 };
@@ -266,8 +266,8 @@ module.exports = {
 
 For example: you can use dynamic entries to get the actual entries from an external source (remote server, file system content or database):
 
-```js title=rspack.config.js
-module.exports = {
+```js title="rspack.config.mjs"
+export default {
   entry() {
     return fetchPathsFromSomeExternalSource(); // returns a promise that will be resolved with something like ['src/main-layout.js', 'src/admin-layout.js']
   },

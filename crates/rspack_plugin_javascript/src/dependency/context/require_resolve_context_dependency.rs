@@ -1,12 +1,14 @@
+use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AffectType, AsModuleDependency, Compilation, ContextDependency, ContextOptions,
-  ContextTypePrefix, Dependency, DependencyCategory, DependencyId, DependencyRange,
-  DependencyTemplate, DependencyType, RuntimeSpec, TemplateContext, TemplateReplaceSource,
+  AffectType, AsModuleDependency, ContextDependency, ContextOptions, ContextTypePrefix, Dependency,
+  DependencyCategory, DependencyId, DependencyRange, DependencyTemplate, DependencyType,
+  FactorizeInfo, TemplateContext, TemplateReplaceSource,
 };
 use rspack_error::Diagnostic;
 
 use super::{context_dependency_template_as_id, create_resource_identifier_for_context_dependency};
 
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct RequireResolveContextDependency {
   id: DependencyId,
@@ -15,6 +17,7 @@ pub struct RequireResolveContextDependency {
   resource_identifier: String,
   optional: bool,
   critical: Option<Diagnostic>,
+  factorize_info: FactorizeInfo,
 }
 
 impl RequireResolveContextDependency {
@@ -27,10 +30,12 @@ impl RequireResolveContextDependency {
       resource_identifier,
       optional,
       critical: None,
+      factorize_info: Default::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for RequireResolveContextDependency {
   fn id(&self) -> &DependencyId {
     &self.id
@@ -89,8 +94,17 @@ impl ContextDependency for RequireResolveContextDependency {
   fn critical_mut(&mut self) -> &mut Option<Diagnostic> {
     &mut self.critical
   }
+
+  fn factorize_info(&self) -> &FactorizeInfo {
+    &self.factorize_info
+  }
+
+  fn factorize_info_mut(&mut self) -> &mut FactorizeInfo {
+    &mut self.factorize_info
+  }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for RequireResolveContextDependency {
   fn apply(
     &self,
@@ -98,18 +112,6 @@ impl DependencyTemplate for RequireResolveContextDependency {
     code_generatable_context: &mut TemplateContext,
   ) {
     context_dependency_template_as_id(self, source, code_generatable_context, &self.range);
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

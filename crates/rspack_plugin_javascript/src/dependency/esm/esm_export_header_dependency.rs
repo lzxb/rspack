@@ -1,35 +1,46 @@
+use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
 use rspack_core::{
-  AsContextDependency, AsModuleDependency, Compilation, Dependency, DependencyId, DependencyRange,
-  DependencyTemplate, DependencyType, RuntimeSpec, TemplateContext, TemplateReplaceSource,
+  AsContextDependency, AsModuleDependency, Dependency, DependencyId, DependencyLocation,
+  DependencyRange, DependencyTemplate, DependencyType, SharedSourceMap, TemplateContext,
+  TemplateReplaceSource,
 };
 
 // Remove `export` label.
 // Before: `export const a = 1`
 // After: `const a = 1`
+#[cacheable]
 #[derive(Debug, Clone)]
 pub struct ESMExportHeaderDependency {
   id: DependencyId,
   range: DependencyRange,
   range_decl: Option<DependencyRange>,
+  #[cacheable(with=Skip)]
+  source_map: Option<SharedSourceMap>,
 }
 
 impl ESMExportHeaderDependency {
-  pub fn new(range: DependencyRange, range_decl: Option<DependencyRange>) -> Self {
+  pub fn new(
+    range: DependencyRange,
+    range_decl: Option<DependencyRange>,
+    source_map: Option<SharedSourceMap>,
+  ) -> Self {
     Self {
       range,
       range_decl,
+      source_map,
       id: DependencyId::default(),
     }
   }
 }
 
+#[cacheable_dyn]
 impl Dependency for ESMExportHeaderDependency {
   fn id(&self) -> &rspack_core::DependencyId {
     &self.id
   }
 
-  fn loc(&self) -> Option<String> {
-    Some(self.range.to_string())
+  fn loc(&self) -> Option<DependencyLocation> {
+    self.range.to_loc(self.source_map.as_ref())
   }
 
   fn dependency_type(&self) -> &DependencyType {
@@ -41,6 +52,7 @@ impl Dependency for ESMExportHeaderDependency {
   }
 }
 
+#[cacheable_dyn]
 impl DependencyTemplate for ESMExportHeaderDependency {
   fn apply(
     &self,
@@ -57,18 +69,6 @@ impl DependencyTemplate for ESMExportHeaderDependency {
       "",
       None,
     );
-  }
-
-  fn dependency_id(&self) -> Option<DependencyId> {
-    Some(self.id)
-  }
-
-  fn update_hash(
-    &self,
-    _hasher: &mut dyn std::hash::Hasher,
-    _compilation: &Compilation,
-    _runtime: Option<&RuntimeSpec>,
-  ) {
   }
 }
 

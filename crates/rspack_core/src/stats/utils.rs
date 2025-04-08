@@ -5,10 +5,13 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspack_collections::Identifier;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use super::{Stats, StatsChunkGroup, StatsErrorModuleTraceModule, StatsModule, StatsModuleTrace};
+use super::{
+  Stats, StatsChunkGroup, StatsErrorModuleTraceDependency, StatsErrorModuleTraceModule,
+  StatsModule, StatsModuleTrace,
+};
 use crate::{
   BoxModule, Chunk, ChunkByUkey, ChunkGraph, ChunkGroupByUkey, ChunkGroupOrderKey, ChunkGroupUkey,
-  Compilation, CompilerOptions, ModuleGraph,
+  Compilation, CompilerOptions, ModuleGraph, ModuleId,
 };
 
 pub fn get_asset_size(file: &str, compilation: &Compilation) -> usize {
@@ -37,13 +40,13 @@ pub fn sort_modules(modules: &mut [StatsModule]) {
   });
 }
 
-pub fn get_stats_module_name_and_id<'s, 'c>(
+pub fn get_stats_module_name_and_id<'s>(
   module: &'s BoxModule,
-  compilation: &'c Compilation,
-) -> (Cow<'s, str>, Option<&'c str>) {
+  compilation: &Compilation,
+) -> (Cow<'s, str>, Option<ModuleId>) {
   let identifier = module.identifier();
   let name = module.readable_identifier(&compilation.options.context);
-  let id = compilation.chunk_graph.get_module_id(identifier);
+  let id = ChunkGraph::get_module_id(&compilation.module_ids_artifact, identifier).cloned();
   (name, id)
 }
 
@@ -94,20 +97,19 @@ pub fn get_chunk_group_oreded_child_assets(
 
 pub fn get_chunk_relations(
   chunk: &Chunk,
-  chunk_group_by_ukey: &ChunkGroupByUkey,
-  chunk_by_ukey: &ChunkByUkey,
+  compilation: &Compilation,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
   let mut parents = HashSet::default();
   let mut children = HashSet::default();
   let mut siblings = HashSet::default();
 
   for cg in chunk.groups() {
-    if let Some(cg) = chunk_group_by_ukey.get(cg) {
+    if let Some(cg) = compilation.chunk_group_by_ukey.get(cg) {
       for p in &cg.parents {
-        if let Some(pg) = chunk_group_by_ukey.get(p) {
+        if let Some(pg) = compilation.chunk_group_by_ukey.get(p) {
           for c in &pg.chunks {
-            if let Some(c) = chunk_by_ukey.get(c)
-              && let Some(id) = c.id()
+            if let Some(c) = compilation.chunk_by_ukey.get(c)
+              && let Some(id) = c.id(&compilation.chunk_ids_artifact)
             {
               parents.insert(id.to_string());
             }
@@ -116,10 +118,10 @@ pub fn get_chunk_relations(
       }
 
       for p in &cg.children {
-        if let Some(pg) = chunk_group_by_ukey.get(p) {
+        if let Some(pg) = compilation.chunk_group_by_ukey.get(p) {
           for c in &pg.chunks {
-            if let Some(c) = chunk_by_ukey.get(c)
-              && let Some(id) = c.id()
+            if let Some(c) = compilation.chunk_by_ukey.get(c)
+              && let Some(id) = c.id(&compilation.chunk_ids_artifact)
             {
               children.insert(id.to_string());
             }
@@ -128,9 +130,9 @@ pub fn get_chunk_relations(
       }
 
       for c in &cg.chunks {
-        if let Some(c) = chunk_by_ukey.get(c)
-          && c.id() != chunk.id()
-          && let Some(id) = c.id()
+        if let Some(c) = compilation.chunk_by_ukey.get(c)
+          && c.id(&compilation.chunk_ids_artifact) != chunk.id(&compilation.chunk_ids_artifact)
+          && let Some(id) = c.id(&compilation.chunk_ids_artifact)
         {
           siblings.insert(id.to_string());
         }
@@ -152,7 +154,7 @@ pub fn get_chunk_relations(
 pub fn get_module_trace(
   module_identifier: Option<Identifier>,
   module_graph: &ModuleGraph,
-  chunk_graph: &ChunkGraph,
+  compilation: &Compilation,
   options: &CompilerOptions,
 ) -> Vec<StatsModuleTrace> {
   let mut module_trace = vec![];
@@ -174,9 +176,8 @@ pub fn get_module_trace(
       name: origin_module
         .readable_identifier(&options.context)
         .to_string(),
-      id: chunk_graph
-        .get_module_id(origin_module.identifier())
-        .map(|s| s.to_string()),
+      id: ChunkGraph::get_module_id(&compilation.module_ids_artifact, origin_module.identifier())
+        .cloned(),
     };
 
     let current_stats_module = StatsErrorModuleTraceModule {
@@ -184,14 +185,25 @@ pub fn get_module_trace(
       name: current_module
         .readable_identifier(&options.context)
         .to_string(),
-      id: chunk_graph
-        .get_module_id(current_module.identifier())
-        .map(|s| s.to_string()),
+      id: ChunkGraph::get_module_id(
+        &compilation.module_ids_artifact,
+        current_module.identifier(),
+      )
+      .cloned(),
     };
+    let dependencies = module_graph
+      .get_incoming_connections(&module_identifier)
+      .filter_map(|c| {
+        let dep = module_graph.dependency_by_id(&c.dependency_id)?;
+        let loc = dep.loc().map(|loc| loc.to_string())?;
+        Some(StatsErrorModuleTraceDependency { loc })
+      })
+      .collect::<Vec<_>>();
 
     module_trace.push(StatsModuleTrace {
       origin: origin_stats_module,
       module: current_stats_module,
+      dependencies,
     });
 
     current_module_identifier = Some(origin_module.identifier());

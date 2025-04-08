@@ -3,7 +3,7 @@
 require("./helpers/warmup-webpack");
 const path = require("path");
 const fs = require("graceful-fs");
-const rimraf = require("rimraf");
+const { rimrafSync } = require("rimraf");
 const captureStdio = require("./helpers/captureStdio");
 const webpack = require("@rspack/core");
 const { createFilteredDescribe } = require('./lib/util/filterUtil')
@@ -50,7 +50,7 @@ describe("StatsTestCases", () => {
 	tests.forEach(testName => {
 		it("should print correct stats for " + testName, done => {
 			const outputDirectory = path.join(outputBase, testName);
-			rimraf.sync(outputDirectory);
+			rimrafSync(outputDirectory);
 			fs.mkdirSync(outputDirectory, { recursive: true });
 			let options = {
 				mode: "development",
@@ -74,6 +74,8 @@ describe("StatsTestCases", () => {
 			}
 
 			(Array.isArray(options) ? options : [options]).forEach(options => {
+				// CHANGE: rspack does not enable AMD by default
+				if (options.amd === undefined) options.amd = {};
 				if (!options.context) options.context = path.join(base, testName);
 				if (!options.output) options.output = options.output || {};
 				if (!options.output.path) options.output.path = outputDirectory;
@@ -206,7 +208,12 @@ describe("StatsTestCases", () => {
 					.replace(new RegExp(quoteMeta(testPath), "g"), "Xdir/" + testName)
 					.replace(/(\w)\\(\w)/g, "$1/$2")
 					.replace(/, additional resolving: X ms/g, "")
-					.replace(/Unexpected identifier '.+?'/g, "Unexpected identifier");
+					.replace(/Unexpected identifier '.+?'/g, "Unexpected identifier")
+					// CHANGE: Replace bundle size, since bundle sizes may differ between platforms
+					.replace(/-.*\.js/g, "-xxx.js")
+					// CHANGE: Replace bundle size, since bundle sizes may differ between platforms
+					.replace(/[0-9]+\.?[0-9]+ KiB/g, "xx KiB")
+					.replace(/[0-9]+ bytes/g, "xx bytes");
 				expect(actual).toMatchSnapshot();
 				// CHANGE: check actual snapshot
 				// if (testConfig.validate) testConfig.validate(stats, stderr.toString());

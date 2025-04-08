@@ -1,4 +1,4 @@
-const rspack = require("@rspack/core");
+const { rspack } = require("@rspack/core");
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
 	devtool: false,
@@ -26,7 +26,7 @@ module.exports = {
 			CONTEXT: JSON.stringify(__dirname)
 		}),
 		new rspack.SourceMapDevToolPlugin({
-			filename: '[file].map[query]',
-		}),
+			filename: "[file].map[query]"
+		})
 	]
 };

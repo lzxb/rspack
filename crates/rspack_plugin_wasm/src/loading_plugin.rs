@@ -10,8 +10,7 @@ use crate::AsyncWasmLoadingRuntimeModule;
 pub fn enable_wasm_loading_plugin(wasm_loading_type: WasmLoadingType) -> BoxPlugin {
   match wasm_loading_type {
     WasmLoadingType::Fetch => FetchCompileAsyncWasmPlugin::default().boxed(),
-    WasmLoadingType::AsyncNode => ReadFileCompileAsyncWasmPlugin::new(false).boxed(),
-    WasmLoadingType::AsyncNodeModule => ReadFileCompileAsyncWasmPlugin::new(true).boxed(),
+    WasmLoadingType::AsyncNode => ReadFileCompileAsyncWasmPlugin::new().boxed(),
   }
 }
 
@@ -20,7 +19,7 @@ pub fn enable_wasm_loading_plugin(wasm_loading_type: WasmLoadingType) -> BoxPlug
 pub struct FetchCompileAsyncWasmPlugin;
 
 #[plugin_hook(CompilationRuntimeRequirementInTree for FetchCompileAsyncWasmPlugin)]
-fn fetch_compile_async_wasm_plugin_runtime_requirements_in_tree(
+async fn fetch_compile_async_wasm_plugin_runtime_requirements_in_tree(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,
@@ -65,18 +64,16 @@ impl Plugin for FetchCompileAsyncWasmPlugin {
 
 #[plugin]
 #[derive(Debug)]
-pub struct ReadFileCompileAsyncWasmPlugin {
-  import: bool,
-}
+pub struct ReadFileCompileAsyncWasmPlugin {}
 
 impl ReadFileCompileAsyncWasmPlugin {
-  fn new(import: bool) -> Self {
-    Self::new_inner(import)
+  fn new() -> Self {
+    Self::new_inner()
   }
 }
 
 #[plugin_hook(CompilationRuntimeRequirementInTree for ReadFileCompileAsyncWasmPlugin)]
-fn read_file_compile_async_wasm_plugin_runtime_requirements_in_tree(
+async fn read_file_compile_async_wasm_plugin_runtime_requirements_in_tree(
   &self,
   compilation: &mut Compilation,
   chunk_ukey: &ChunkUkey,
@@ -86,10 +83,19 @@ fn read_file_compile_async_wasm_plugin_runtime_requirements_in_tree(
 ) -> Result<Option<()>> {
   if runtime_requirements.contains(RuntimeGlobals::INSTANTIATE_WASM) {
     runtime_requirements_mut.insert(RuntimeGlobals::PUBLIC_PATH);
+
+    let import_enabled = compilation.options.output.module
+      && compilation
+        .options
+        .output
+        .environment
+        .dynamic_import
+        .unwrap_or_default();
+
     compilation.add_runtime_module(
       chunk_ukey,
       AsyncWasmLoadingRuntimeModule::new(
-        if self.import {
+        if import_enabled {
           include_str!("runtime/read_file_compile_async_wasm_with_import.js").to_string()
         } else {
           include_str!("runtime/read_file_compile_async_wasm.js").to_string()

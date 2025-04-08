@@ -1,10 +1,7 @@
-use std::{cmp::Ordering, fmt::Display};
+use std::cmp::Ordering;
 
-use itertools::Itertools;
 use rspack_collections::Identifier;
-use rspack_util::comparators::compare_ids;
-use rspack_util::comparators::compare_numbers;
-use rustc_hash::FxHashMap as HashMap;
+use rspack_util::comparators::{compare_ids, compare_numbers};
 
 use crate::{
   BoxModule, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Compilation, ModuleGraph,
@@ -17,12 +14,16 @@ mod extract_url_and_global;
 mod fast_actions;
 mod file_counter;
 mod find_graph_roots;
+mod fs_trim;
+pub use fs_trim::*;
 mod hash;
 mod identifier;
+mod iterator_consumer;
 mod module_rules;
 mod property_access;
 mod property_name;
 mod queue;
+mod remove_bom;
 mod runtime;
 mod source;
 pub mod task_loop;
@@ -32,36 +33,25 @@ pub use compile_boolean_matcher::*;
 pub use concatenated_module_visitor::*;
 pub use concatenation_scope::*;
 
-pub use self::comment::*;
-pub use self::extract_url_and_global::*;
-pub use self::fast_actions::*;
-pub use self::file_counter::FileCounter;
-pub use self::find_graph_roots::*;
-pub use self::hash::*;
-pub use self::identifier::*;
-pub use self::module_rules::*;
-pub use self::property_access::*;
-pub use self::property_name::*;
-pub use self::queue::*;
-pub use self::runtime::*;
-pub use self::source::*;
-pub use self::template::*;
-pub use self::to_path::to_path;
-
-pub fn parse_to_url(url: &str) -> url::Url {
-  if !url.contains(':') {
-    let mut construct_string = String::with_capacity("specifier:".len() + url.len());
-    construct_string += "specifier:";
-    construct_string += url;
-    url::Url::parse(&construct_string).unwrap_or_else(|_| {
-      panic!("Invalid specifier: {url}, please use a valid specifier or a valid url")
-    })
-  } else {
-    url::Url::parse(url).unwrap_or_else(|_| {
-      panic!("Invalid specifier: {url}, please use a valid specifier or a valid url")
-    })
-  }
-}
+pub use self::{
+  comment::*,
+  extract_url_and_global::*,
+  fast_actions::*,
+  file_counter::FileCounter,
+  find_graph_roots::*,
+  hash::*,
+  identifier::*,
+  iterator_consumer::{FutureConsumer, RayonConsumer, RayonFutureConsumer},
+  module_rules::*,
+  property_access::*,
+  property_name::*,
+  queue::*,
+  remove_bom::*,
+  runtime::*,
+  source::*,
+  template::*,
+  to_path::to_path,
+};
 
 /// join string component in a more human readable way
 /// e.g.
@@ -92,24 +82,6 @@ pub fn join_string_component(mut components: Vec<String>) -> String {
       )
     }
   }
-}
-
-pub fn stringify_map<T: Display>(map: &HashMap<String, T>) -> String {
-  format!(
-    r#"{{{}}}"#,
-    map
-      .keys()
-      .sorted_unstable()
-      .fold(String::new(), |prev, cur| {
-        prev
-          + format!(
-            r#"{}: {},"#,
-            serde_json::to_string(cur).expect("json stringify failed"),
-            map.get(cur).expect("get key from map")
-          )
-          .as_str()
-      })
-  )
 }
 
 pub fn sort_group_by_index(
